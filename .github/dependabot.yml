@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - directory: "/"
+    package-ecosystem: "gomod"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+    target-branch: "develop"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"
+  - directory: "/"
+    package-ecosystem: "npm"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+    target-branch: "develop"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"
