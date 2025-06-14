@@ -1,4 +1,4 @@
-module github.com/JunNishimura/go-template
+module github.com/JunNishimura/graft
 
 go 1.24.4
 

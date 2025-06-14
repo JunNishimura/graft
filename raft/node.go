@@ -3,7 +3,7 @@ package raft
 import (
 	"time"
 
-	"github.com/JunNishimura/go-template/rand"
+	"github.com/JunNishimura/graft/rand"
 )
 
 type Node struct {
