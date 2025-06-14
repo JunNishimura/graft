@@ -1,12 +1,14 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"net/http"
-	"time"
 
+	"github.com/JunNishimura/graft/raft"
+	raftpb "github.com/JunNishimura/graft/raft/grpc"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 const serverCount = 3
@@ -27,12 +29,10 @@ func main() {
 		}
 		defer listner.Close()
 
-		server := http.Server{
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprintf(w, "Hello from server %d at %s", i+1, addresses[i])
-			}),
-			ReadTimeout: 30 * time.Second,
-		}
+		server := grpc.NewServer()
+		raftpb.RegisterGreetingServiceServer(server, raft.NewGreetingServiceServer())
+
+		reflection.Register(server)
 
 		g.Go(func() error {
 			if err := server.Serve(listner); err != nil && err != http.ErrServerClosed {
