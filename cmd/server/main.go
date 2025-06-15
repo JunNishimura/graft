@@ -30,7 +30,7 @@ func main() {
 		defer listner.Close()
 
 		server := grpc.NewServer()
-		raftpb.RegisterGreetingServiceServer(server, raft.NewGreetingServiceServer())
+		raftpb.RegisterRaftServiceServer(server, raft.NewNode())
 
 		reflection.Register(server)
 
