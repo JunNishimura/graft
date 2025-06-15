@@ -21,27 +21,30 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type HelloRequest struct {
+type RequestVoteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	CandidateId   string                 `protobuf:"bytes,2,opt,name=candidateId,proto3" json:"candidateId,omitempty"`
+	LastLogIndex  uint64                 `protobuf:"varint,3,opt,name=lastLogIndex,proto3" json:"lastLogIndex,omitempty"`
+	LastLogTerm   uint64                 `protobuf:"varint,4,opt,name=lastLogTerm,proto3" json:"lastLogTerm,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HelloRequest) Reset() {
-	*x = HelloRequest{}
+func (x *RequestVoteRequest) Reset() {
+	*x = RequestVoteRequest{}
 	mi := &file_raft_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HelloRequest) String() string {
+func (x *RequestVoteRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HelloRequest) ProtoMessage() {}
+func (*RequestVoteRequest) ProtoMessage() {}
 
-func (x *HelloRequest) ProtoReflect() protoreflect.Message {
+func (x *RequestVoteRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_raft_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -53,39 +56,61 @@ func (x *HelloRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HelloRequest.ProtoReflect.Descriptor instead.
-func (*HelloRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use RequestVoteRequest.ProtoReflect.Descriptor instead.
+func (*RequestVoteRequest) Descriptor() ([]byte, []int) {
 	return file_raft_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *HelloRequest) GetName() string {
+func (x *RequestVoteRequest) GetTerm() uint64 {
 	if x != nil {
-		return x.Name
+		return x.Term
+	}
+	return 0
+}
+
+func (x *RequestVoteRequest) GetCandidateId() string {
+	if x != nil {
+		return x.CandidateId
 	}
 	return ""
 }
 
-type HelloResponse struct {
+func (x *RequestVoteRequest) GetLastLogIndex() uint64 {
+	if x != nil {
+		return x.LastLogIndex
+	}
+	return 0
+}
+
+func (x *RequestVoteRequest) GetLastLogTerm() uint64 {
+	if x != nil {
+		return x.LastLogTerm
+	}
+	return 0
+}
+
+type RequestVoteResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	VoteGranted   bool                   `protobuf:"varint,2,opt,name=voteGranted,proto3" json:"voteGranted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HelloResponse) Reset() {
-	*x = HelloResponse{}
+func (x *RequestVoteResponse) Reset() {
+	*x = RequestVoteResponse{}
 	mi := &file_raft_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HelloResponse) String() string {
+func (x *RequestVoteResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HelloResponse) ProtoMessage() {}
+func (*RequestVoteResponse) ProtoMessage() {}
 
-func (x *HelloResponse) ProtoReflect() protoreflect.Message {
+func (x *RequestVoteResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_raft_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -97,16 +122,23 @@ func (x *HelloResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HelloResponse.ProtoReflect.Descriptor instead.
-func (*HelloResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use RequestVoteResponse.ProtoReflect.Descriptor instead.
+func (*RequestVoteResponse) Descriptor() ([]byte, []int) {
 	return file_raft_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *HelloResponse) GetMessage() string {
+func (x *RequestVoteResponse) GetTerm() uint64 {
 	if x != nil {
-		return x.Message
+		return x.Term
 	}
-	return ""
+	return 0
+}
+
+func (x *RequestVoteResponse) GetVoteGranted() bool {
+	if x != nil {
+		return x.VoteGranted
+	}
+	return false
 }
 
 var File_raft_proto protoreflect.FileDescriptor
@@ -114,13 +146,17 @@ var File_raft_proto protoreflect.FileDescriptor
 const file_raft_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"raft.proto\x12\x04raft\"\"\n" +
-	"\fHelloRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\")\n" +
-	"\rHelloResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage2C\n" +
-	"\x0fGreetingService\x120\n" +
-	"\x05Hello\x12\x12.raft.HelloRequest\x1a\x13.raft.HelloResponseB\vZ\traft/grpcb\x06proto3"
+	"raft.proto\x12\x04raft\"\x90\x01\n" +
+	"\x12RequestVoteRequest\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x04R\x04term\x12 \n" +
+	"\vcandidateId\x18\x02 \x01(\tR\vcandidateId\x12\"\n" +
+	"\flastLogIndex\x18\x03 \x01(\x04R\flastLogIndex\x12 \n" +
+	"\vlastLogTerm\x18\x04 \x01(\x04R\vlastLogTerm\"K\n" +
+	"\x13RequestVoteResponse\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x04R\x04term\x12 \n" +
+	"\vvoteGranted\x18\x02 \x01(\bR\vvoteGranted2Q\n" +
+	"\vRaftService\x12B\n" +
+	"\vRequestVote\x12\x18.raft.RequestVoteRequest\x1a\x19.raft.RequestVoteResponseB\vZ\traft/grpcb\x06proto3"
 
 var (
 	file_raft_proto_rawDescOnce sync.Once
@@ -136,12 +172,12 @@ func file_raft_proto_rawDescGZIP() []byte {
 
 var file_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_raft_proto_goTypes = []any{
-	(*HelloRequest)(nil),  // 0: raft.HelloRequest
-	(*HelloResponse)(nil), // 1: raft.HelloResponse
+	(*RequestVoteRequest)(nil),  // 0: raft.RequestVoteRequest
+	(*RequestVoteResponse)(nil), // 1: raft.RequestVoteResponse
 }
 var file_raft_proto_depIdxs = []int32{
-	0, // 0: raft.GreetingService.Hello:input_type -> raft.HelloRequest
-	1, // 1: raft.GreetingService.Hello:output_type -> raft.HelloResponse
+	0, // 0: raft.RaftService.RequestVote:input_type -> raft.RequestVoteRequest
+	1, // 1: raft.RaftService.RequestVote:output_type -> raft.RequestVoteResponse
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

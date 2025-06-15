@@ -19,101 +19,101 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	GreetingService_Hello_FullMethodName = "/raft.GreetingService/Hello"
+	RaftService_RequestVote_FullMethodName = "/raft.RaftService/RequestVote"
 )
 
-// GreetingServiceClient is the client API for GreetingService service.
+// RaftServiceClient is the client API for RaftService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type GreetingServiceClient interface {
-	Hello(ctx context.Context, in *HelloRequest, opts ...grpc.CallOption) (*HelloResponse, error)
+type RaftServiceClient interface {
+	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 }
 
-type greetingServiceClient struct {
+type raftServiceClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewGreetingServiceClient(cc grpc.ClientConnInterface) GreetingServiceClient {
-	return &greetingServiceClient{cc}
+func NewRaftServiceClient(cc grpc.ClientConnInterface) RaftServiceClient {
+	return &raftServiceClient{cc}
 }
 
-func (c *greetingServiceClient) Hello(ctx context.Context, in *HelloRequest, opts ...grpc.CallOption) (*HelloResponse, error) {
+func (c *raftServiceClient) RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(HelloResponse)
-	err := c.cc.Invoke(ctx, GreetingService_Hello_FullMethodName, in, out, cOpts...)
+	out := new(RequestVoteResponse)
+	err := c.cc.Invoke(ctx, RaftService_RequestVote_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// GreetingServiceServer is the server API for GreetingService service.
-// All implementations must embed UnimplementedGreetingServiceServer
+// RaftServiceServer is the server API for RaftService service.
+// All implementations must embed UnimplementedRaftServiceServer
 // for forward compatibility.
-type GreetingServiceServer interface {
-	Hello(context.Context, *HelloRequest) (*HelloResponse, error)
-	mustEmbedUnimplementedGreetingServiceServer()
+type RaftServiceServer interface {
+	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
+	mustEmbedUnimplementedRaftServiceServer()
 }
 
-// UnimplementedGreetingServiceServer must be embedded to have
+// UnimplementedRaftServiceServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedGreetingServiceServer struct{}
+type UnimplementedRaftServiceServer struct{}
 
-func (UnimplementedGreetingServiceServer) Hello(context.Context, *HelloRequest) (*HelloResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Hello not implemented")
+func (UnimplementedRaftServiceServer) RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
 }
-func (UnimplementedGreetingServiceServer) mustEmbedUnimplementedGreetingServiceServer() {}
-func (UnimplementedGreetingServiceServer) testEmbeddedByValue()                         {}
+func (UnimplementedRaftServiceServer) mustEmbedUnimplementedRaftServiceServer() {}
+func (UnimplementedRaftServiceServer) testEmbeddedByValue()                     {}
 
-// UnsafeGreetingServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to GreetingServiceServer will
+// UnsafeRaftServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to RaftServiceServer will
 // result in compilation errors.
-type UnsafeGreetingServiceServer interface {
-	mustEmbedUnimplementedGreetingServiceServer()
+type UnsafeRaftServiceServer interface {
+	mustEmbedUnimplementedRaftServiceServer()
 }
 
-func RegisterGreetingServiceServer(s grpc.ServiceRegistrar, srv GreetingServiceServer) {
-	// If the following call pancis, it indicates UnimplementedGreetingServiceServer was
+func RegisterRaftServiceServer(s grpc.ServiceRegistrar, srv RaftServiceServer) {
+	// If the following call pancis, it indicates UnimplementedRaftServiceServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&GreetingService_ServiceDesc, srv)
+	s.RegisterService(&RaftService_ServiceDesc, srv)
 }
 
-func _GreetingService_Hello_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(HelloRequest)
+func _RaftService_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestVoteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(GreetingServiceServer).Hello(ctx, in)
+		return srv.(RaftServiceServer).RequestVote(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: GreetingService_Hello_FullMethodName,
+		FullMethod: RaftService_RequestVote_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GreetingServiceServer).Hello(ctx, req.(*HelloRequest))
+		return srv.(RaftServiceServer).RequestVote(ctx, req.(*RequestVoteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// GreetingService_ServiceDesc is the grpc.ServiceDesc for GreetingService service.
+// RaftService_ServiceDesc is the grpc.ServiceDesc for RaftService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var GreetingService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "raft.GreetingService",
-	HandlerType: (*GreetingServiceServer)(nil),
+var RaftService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "raft.RaftService",
+	HandlerType: (*RaftServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Hello",
-			Handler:    _GreetingService_Hello_Handler,
+			MethodName: "RequestVote",
+			Handler:    _RaftService_RequestVote_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
