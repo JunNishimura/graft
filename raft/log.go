@@ -30,3 +30,17 @@ func (l Logs) IsMoreUpToDate(candidateTerm Term, candidateIndex Index) bool {
 	}
 	return true
 }
+
+func (l Logs) LastIndex() Index {
+	if len(l) == 0 {
+		return 0
+	}
+	return l[len(l)-1].Index
+}
+
+func (l Logs) LastTerm() Term {
+	if len(l) == 0 {
+		return 0
+	}
+	return l[len(l)-1].Term
+}
