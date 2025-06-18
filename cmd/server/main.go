@@ -8,6 +8,7 @@ import (
 	raftpb "github.com/JunNishimura/graft/raft/grpc"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -29,8 +30,27 @@ func main() {
 		}
 		defer listner.Close()
 
+		clients := make([]raftpb.RaftServiceClient, 0, serverCount-1)
+		for j := 0; j < serverCount; j++ {
+			if i == j {
+				continue
+			}
+
+			conn, err := grpc.NewClient(
+				addresses[j],
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			)
+			if err != nil {
+				panic(err)
+			}
+			defer conn.Close()
+
+			client := raftpb.NewRaftServiceClient(conn)
+			clients = append(clients, client)
+		}
+
 		server := grpc.NewServer()
-		raftpb.RegisterRaftServiceServer(server, raft.NewNode())
+		raftpb.RegisterRaftServiceServer(server, raft.NewNode(clients))
 
 		reflection.Register(server)
 
