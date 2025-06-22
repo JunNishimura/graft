@@ -89,7 +89,7 @@ func (n *Node) runForLeader(ctx context.Context) error {
 		}(client)
 	}
 
-	voteCount := 1
+	voteCount := 1 // Count the vote for itself
 	for resp := range respCh {
 		if resp.Term > uint64(n.currentTerm) {
 			n.loseElection(resp.Term)
