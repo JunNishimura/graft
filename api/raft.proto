@@ -21,9 +21,15 @@ message RequestVoteResponse {
 	bool voteGranted = 2;
 }
 
-message Entry {
+message EntryData {
 	string key = 1;
 	uint64 value = 2;
+}
+
+message Entry {
+	uint64 term = 1;
+	uint64 index = 2;
+	EntryData data = 3;
 }
 
 message AppendEntriesRequest {
