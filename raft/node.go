@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"log"
+	"math"
 	"time"
 
 	raftpb "github.com/JunNishimura/graft/raft/grpc"
@@ -17,13 +18,24 @@ func NewID() ID {
 	return ID(ulid)
 }
 
+type StateMachine struct {
+	m map[string]uint64
+}
+
 type Node struct {
-	id              ID
-	electionTimeout time.Duration
-	state           State
-	currentTerm     Term
-	votedFor        *ID
-	logs            Logs
+	id           ID
+	leaderID     *ID
+	timeoutTimer *time.Timer
+	state        State
+	currentTerm  Term
+	votedFor     *ID
+	logs         Logs
+	commitIndex  Index
+	lastApplied  Index
+	nextIndex    []Index
+	matchIndex   []Index
+
+	stateMachine *StateMachine
 
 	clients []raftpb.RaftServiceClient
 	raftpb.UnimplementedRaftServiceServer
@@ -32,6 +44,7 @@ type Node struct {
 const (
 	electionTimeoutLowerBound = 150 * time.Millisecond
 	electionTimeoutUpperBound = 300 * time.Millisecond
+	heartbeatInterval         = 100 * time.Millisecond
 )
 
 var (
@@ -41,33 +54,41 @@ var (
 func NewNode(clients []raftpb.RaftServiceClient) *Node {
 	return &Node{
 		id: NewID(),
-		electionTimeout: rand.GenerateDuration(
+		timeoutTimer: time.NewTimer(rand.GenerateDuration(
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
-		),
-		state:   StateFollower,
-		clients: clients,
+		)),
+		state:       StateFollower,
+		currentTerm: 0,
+		votedFor:    nil,
+		logs:        make(Logs, 0),
+		commitIndex: 0,
+		lastApplied: 0,
+		clients:     clients,
+		stateMachine: &StateMachine{
+			m: make(map[string]uint64),
+		},
 	}
 }
 
-func (n *Node) Run(ctx context.Context) error {
+func (n *Node) Run(ctx context.Context) {
 	for {
-		timer := time.NewTimer(n.electionTimeout)
-
 		select {
-		case <-timer.C:
-			n.runForLeader(ctx)
+		case <-n.timeoutTimer.C:
+			n.startElection(ctx)
 		}
 	}
-
-	return nil
 }
 
-func (n *Node) runForLeader(ctx context.Context) error {
+func (n *Node) startElection(ctx context.Context) {
 	// Election timeout reached, start a new election
 	n.state = StateCandidate
 	n.currentTerm++
 	n.votedFor = &n.id
+	n.timeoutTimer.Reset(rand.GenerateDuration(
+		electionTimeoutLowerBound,
+		electionTimeoutUpperBound,
+	))
 
 	respCh := make(chan *raftpb.RequestVoteResponse, len(n.clients))
 	for _, client := range n.clients {
@@ -92,8 +113,15 @@ func (n *Node) runForLeader(ctx context.Context) error {
 	voteCount := 1 // Count the vote for itself
 	for resp := range respCh {
 		if resp.Term > uint64(n.currentTerm) {
-			n.loseElection(resp.Term)
+			n.state = StateFollower
+			n.votedFor = nil
+			n.currentTerm = Term(resp.Term)
+			n.timeoutTimer.Reset(rand.GenerateDuration(
+				electionTimeoutLowerBound,
+				electionTimeoutUpperBound,
+			))
 			close(respCh)
+			return
 		}
 
 		if !resp.VoteGranted {
@@ -102,12 +130,10 @@ func (n *Node) runForLeader(ctx context.Context) error {
 
 		voteCount++
 		if n.isElectionWinner(voteCount) {
-			n.winElection()
 			close(respCh)
+			n.becomeLeader(ctx)
 		}
 	}
-
-	return nil
 }
 
 func (n *Node) isElectionWinner(voteCount int) bool {
@@ -115,24 +141,89 @@ func (n *Node) isElectionWinner(voteCount int) bool {
 	return voteCount > len(n.clients)/2
 }
 
-func (n *Node) winElection() {
+func (n *Node) becomeLeader(ctx context.Context) {
 	n.state = StateLeader
 	n.votedFor = nil
+
+	// Initialize nextIndex as the last log index + 1 for each client
+	n.nextIndex = make([]Index, len(n.clients))
+	lastLogIndex := n.logs.LastIndex()
+	for i := range n.nextIndex {
+		n.nextIndex[i] = lastLogIndex + 1
+	}
+	n.matchIndex = make([]Index, len(n.clients))
+
+	// Send heartbeat to all clients to establish leadership
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		n.heartbeat(ctx)
+	}
 }
 
-func (n *Node) loseElection(term uint64) {
-	n.state = StateFollower
-	n.votedFor = nil
-	n.currentTerm = Term(term)
+func (n *Node) heartbeat(ctx context.Context) {
+	// TODO: process concurrently
+	for i, client := range n.clients {
+		prevLogIndex := uint64(0)
+		prevLogTerm := uint64(0)
+		prevLog := n.logs.FindByIndex(n.nextIndex[i] - 1)
+		if prevLog != nil {
+			prevLogIndex = uint64(prevLog.Index)
+			prevLogTerm = uint64(prevLog.Term)
+		}
+
+		req := &raftpb.AppendEntriesRequest{
+			Term:         uint64(n.currentTerm),
+			LeaderId:     string(n.id),
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			Entries:      nil, // No new entries in heartbeat
+			LeaderCommit: uint64(n.commitIndex),
+		}
+
+		resp, err := client.AppendEntries(ctx, req)
+		if err != nil {
+			log.Printf("failed to send AppendEntriesRequest: %v", err)
+			continue
+		}
+
+		if resp.Term > uint64(n.currentTerm) {
+			n.state = StateFollower
+			n.votedFor = nil
+			n.currentTerm = Term(resp.Term)
+			n.timeoutTimer.Reset(rand.GenerateDuration(
+				electionTimeoutLowerBound,
+				electionTimeoutUpperBound,
+			))
+			return
+		}
+
+		if resp.Success {
+			n.matchIndex[i] = n.nextIndex[i] - 1
+		} else if n.nextIndex[i] > 0 {
+			n.nextIndex[i]--
+		}
+	}
 }
 
 func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error) {
 	// check if the request term is greater than or equal to the current term.
-	if !n.currentTerm.IsVotable(Term(req.Term)) {
+	if Term(req.Term) < n.currentTerm {
 		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
 		}, nil
+	}
+
+	if Term(req.Term) > n.currentTerm {
+		n.timeoutTimer.Reset(rand.GenerateDuration(
+			electionTimeoutLowerBound,
+			electionTimeoutUpperBound,
+		))
+		n.currentTerm = Term(req.Term)
+		n.state = StateFollower
+		n.votedFor = nil // Reset votedFor when a new term is started
 	}
 
 	// check if the node has not voted yet or if it has voted for the candidate.
@@ -151,8 +242,77 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 		}, nil
 	}
 
+	// Grant the vote to the candidate
+	candidateId := ID(req.CandidateId)
+	n.votedFor = &candidateId
 	return &raftpb.RequestVoteResponse{
 		Term:        uint64(n.currentTerm),
 		VoteGranted: true,
+	}, nil
+}
+
+func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
+	// Reject the request if the term is less than the current term
+	if Term(req.Term) < n.currentTerm {
+		return &raftpb.AppendEntriesResponse{
+			Term:    uint64(n.currentTerm),
+			Success: false,
+		}, nil
+	}
+	if Term(req.Term) >= n.currentTerm {
+		n.timeoutTimer.Reset(rand.GenerateDuration(
+			electionTimeoutLowerBound,
+			electionTimeoutUpperBound,
+		))
+	}
+	if Term(req.Term) > n.currentTerm {
+		n.currentTerm = Term(req.Term)
+		n.state = StateFollower
+		n.votedFor = nil // Reset votedFor when a new term is started
+		leaderID := ID(req.LeaderId)
+		n.leaderID = &leaderID
+	}
+
+	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
+	if !n.logs.containsLog(Term(req.PrevLogTerm), Index(req.PrevLogIndex)) {
+		return &raftpb.AppendEntriesResponse{
+			Term:    uint64(n.currentTerm),
+			Success: false,
+		}, nil
+	}
+
+	// Delete conflicting log entries
+	for _, entry := range req.Entries {
+		matchLog := n.logs.FindByIndex(Index(entry.Index))
+		if matchLog == nil || matchLog.Term == Term(entry.Term) {
+			continue
+		}
+
+		// If the log entry conflicts a new one(same index but different term), delete the existing log entry and all entries after it
+		n.logs = n.logs.DeleteAllAfter(Index(entry.Index))
+	}
+
+	// Append new log entries
+	for _, entry := range req.Entries {
+		logEntry := &Log{
+			Index: Index(entry.Index),
+			Term:  Term(entry.Term),
+			Data: &LogData{
+				Key:   entry.Data.Key,
+				Value: entry.Data.Value,
+			},
+		}
+
+		n.logs = append(n.logs, logEntry)
+	}
+
+	// Update commit index
+	if req.LeaderCommit > uint64(n.commitIndex) {
+		n.commitIndex = Index(math.Min(float64(req.LeaderCommit), float64(n.logs.LastIndex())))
+	}
+
+	return &raftpb.AppendEntriesResponse{
+		Term:    uint64(n.currentTerm),
+		Success: true,
 	}, nil
 }

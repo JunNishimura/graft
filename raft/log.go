@@ -4,14 +4,15 @@ type Index uint64
 
 type Term uint64
 
-func (t Term) IsVotable(candidateTerm Term) bool {
-	return t <= candidateTerm
+type LogData struct {
+	Key   string
+	Value uint64
 }
 
 type Log struct {
 	Term  Term
 	Index Index
-	Data  []byte
+	Data  *LogData
 }
 
 type Logs []*Log
@@ -43,4 +44,50 @@ func (l Logs) LastTerm() Term {
 		return 0
 	}
 	return l[len(l)-1].Term
+}
+
+func (l Logs) containsLog(term Term, index Index) bool {
+	if len(l) == 0 {
+		return term == 0 && index == 0
+	}
+
+	if l.LastIndex() < index {
+		return false
+	}
+
+	for i := len(l) - 1; i >= 0; i-- {
+		if l[i].Index == index {
+			return l[i].Term == term
+		}
+	}
+
+	return false
+}
+
+func (l Logs) FindByIndex(index Index) *Log {
+	if l.LastIndex() < index {
+		return nil
+	}
+
+	for i := len(l) - 1; i >= 0; i-- {
+		if l[i].Index == index {
+			return l[i]
+		}
+	}
+
+	return nil
+}
+
+func (l Logs) DeleteAllAfter(index Index) Logs {
+	if l.LastIndex() < index {
+		return l
+	}
+
+	for i := len(l) - 1; i >= 0; i-- {
+		if l[i].Index == index {
+			return l[:i]
+		}
+	}
+
+	return l
 }
