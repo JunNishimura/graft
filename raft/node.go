@@ -18,6 +18,10 @@ func NewID() ID {
 	return ID(ulid)
 }
 
+func (id ID) Equal(other ID) bool {
+	return id == other
+}
+
 type StateMachine struct {
 	m map[string]uint64
 }
@@ -37,7 +41,7 @@ type Node struct {
 
 	stateMachine *StateMachine
 
-	clients []raftpb.RaftServiceClient
+	cluster Cluster
 	raftpb.UnimplementedRaftServiceServer
 }
 
@@ -51,9 +55,8 @@ var (
 	_ raftpb.RaftServiceServer = (*Node)(nil)
 )
 
-func NewNode(clients []raftpb.RaftServiceClient) *Node {
+func NewNode(nodeID ID, cluster Cluster) *Node {
 	return &Node{
-		id: NewID(),
 		timeoutTimer: time.NewTimer(rand.GenerateDuration(
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
@@ -64,10 +67,10 @@ func NewNode(clients []raftpb.RaftServiceClient) *Node {
 		logs:        make(Logs, 0),
 		commitIndex: 0,
 		lastApplied: 0,
-		clients:     clients,
 		stateMachine: &StateMachine{
 			m: make(map[string]uint64),
 		},
+		cluster: cluster,
 	}
 }
 
@@ -90,8 +93,9 @@ func (n *Node) startElection(ctx context.Context) {
 		electionTimeoutUpperBound,
 	))
 
-	respCh := make(chan *raftpb.RequestVoteResponse, len(n.clients))
-	for _, client := range n.clients {
+	respCh := make(chan *raftpb.RequestVoteResponse, n.cluster.NodeCount()-1)
+	for _, node := range n.cluster.OtherNodes(n.id) {
+		client := node.RPCClient
 		go func(client raftpb.RaftServiceClient) {
 			req := &raftpb.RequestVoteRequest{
 				Term:         uint64(n.currentTerm),
@@ -138,7 +142,7 @@ func (n *Node) startElection(ctx context.Context) {
 
 func (n *Node) isElectionWinner(voteCount int) bool {
 	// If the node has received more than half of the votes, it is the leader
-	return voteCount > len(n.clients)/2
+	return voteCount > n.cluster.NodeCount()/2
 }
 
 func (n *Node) becomeLeader(ctx context.Context) {
@@ -146,12 +150,12 @@ func (n *Node) becomeLeader(ctx context.Context) {
 	n.votedFor = nil
 
 	// Initialize nextIndex as the last log index + 1 for each client
-	n.nextIndex = make([]Index, len(n.clients))
+	n.nextIndex = make([]Index, n.cluster.NodeCount())
 	lastLogIndex := n.logs.LastIndex()
 	for i := range n.nextIndex {
 		n.nextIndex[i] = lastLogIndex + 1
 	}
-	n.matchIndex = make([]Index, len(n.clients))
+	n.matchIndex = make([]Index, n.cluster.NodeCount())
 
 	// Send heartbeat to all clients to establish leadership
 	ticker := time.NewTicker(heartbeatInterval)
@@ -164,7 +168,8 @@ func (n *Node) becomeLeader(ctx context.Context) {
 
 func (n *Node) heartbeat(ctx context.Context) {
 	// TODO: process concurrently
-	for i, client := range n.clients {
+	for i, node := range n.cluster.OtherNodes(n.id) {
+		client := node.RPCClient
 		prevLogIndex := uint64(0)
 		prevLogTerm := uint64(0)
 		prevLog := n.logs.FindByIndex(n.nextIndex[i] - 1)
