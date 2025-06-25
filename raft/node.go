@@ -57,6 +57,7 @@ var (
 
 func NewNode(nodeID ID, cluster Cluster) *Node {
 	return &Node{
+		id: nodeID,
 		timeoutTimer: time.NewTimer(rand.GenerateDuration(
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
