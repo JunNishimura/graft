@@ -40,18 +40,21 @@ func main() {
 
 	cluster, cleanup, err := raft.NewCluster(addresses)
 	if err != nil {
-		panic(err)
+		slog.Error("failed to create cluster", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := cleanup(); err != nil {
-			panic(err)
+			slog.Error("failed to cleanup cluster", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	for _, node := range cluster.Nodes() {
 		listner, err := net.Listen("tcp", node.Address)
 		if err != nil {
-			panic(err)
+			slog.Error("failed to listen on address", "address", node.Address, "error", err)
+			os.Exit(1)
 		}
 		defer listner.Close()
 
@@ -69,6 +72,7 @@ func main() {
 	}
 
 	if err := g.Wait(); err != nil {
-		panic(err)
+		slog.Error("failed to wait for server", "error", err)
+		os.Exit(1)
 	}
 }

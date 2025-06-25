@@ -2,7 +2,7 @@ package raft
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"math"
 	"time"
 
@@ -85,6 +85,11 @@ func (n *Node) Run(ctx context.Context) {
 }
 
 func (n *Node) startElection(ctx context.Context) {
+	slog.InfoContext(ctx,
+		"Election timeout reached, starting a new election",
+		"node_id", n.id,
+		"current_term", n.currentTerm)
+
 	// Election timeout reached, start a new election
 	n.state = StateCandidate
 	n.currentTerm++
@@ -107,7 +112,7 @@ func (n *Node) startElection(ctx context.Context) {
 
 			resp, err := client.RequestVote(ctx, req)
 			if err != nil {
-				log.Printf("failed to send RequestVoteRequest: %v", err)
+				slog.Error("failed to send RequestVoteRequest", "error", err)
 				return
 			}
 
@@ -118,6 +123,12 @@ func (n *Node) startElection(ctx context.Context) {
 	voteCount := 1 // Count the vote for itself
 	for resp := range respCh {
 		if resp.Term > uint64(n.currentTerm) {
+			slog.InfoContext(ctx,
+				"Received higher term during election, stepping down",
+				"node_id", n.id,
+				"received_term", resp.Term,
+				"current_term", n.currentTerm)
+
 			n.state = StateFollower
 			n.votedFor = nil
 			n.currentTerm = Term(resp.Term)
@@ -135,6 +146,12 @@ func (n *Node) startElection(ctx context.Context) {
 
 		voteCount++
 		if n.isElectionWinner(voteCount) {
+			slog.InfoContext(ctx,
+				"Election won, becoming leader",
+				"node_id", n.id,
+				"current_term", n.currentTerm,
+				"vote_count", voteCount)
+
 			close(respCh)
 			n.becomeLeader(ctx)
 		}
@@ -168,6 +185,11 @@ func (n *Node) becomeLeader(ctx context.Context) {
 }
 
 func (n *Node) heartbeat(ctx context.Context) {
+	slog.InfoContext(ctx,
+		"Sending heartbeat to all nodes",
+		"node_id", n.id,
+		"current_term", n.currentTerm)
+
 	// TODO: process concurrently
 	for i, node := range n.cluster.OtherNodes(n.id) {
 		client := node.RPCClient
@@ -190,7 +212,7 @@ func (n *Node) heartbeat(ctx context.Context) {
 
 		resp, err := client.AppendEntries(ctx, req)
 		if err != nil {
-			log.Printf("failed to send AppendEntriesRequest: %v", err)
+			slog.Error("failed to send AppendEntriesRequest", "error", err)
 			continue
 		}
 
@@ -214,8 +236,22 @@ func (n *Node) heartbeat(ctx context.Context) {
 }
 
 func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error) {
+	slog.InfoContext(ctx,
+		"Received RequestVoteRequest",
+		"node_id", n.id,
+		"request_term", req.Term,
+		"candidate_id", req.CandidateId,
+		"last_log_index", req.LastLogIndex,
+		"last_log_term", req.LastLogTerm)
+
 	// check if the request term is greater than or equal to the current term.
 	if Term(req.Term) < n.currentTerm {
+		slog.InfoContext(ctx,
+			"Rejecting RequestVoteRequest due to lower term",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term)
+
 		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
@@ -223,6 +259,12 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 	}
 
 	if Term(req.Term) > n.currentTerm {
+		slog.InfoContext(ctx,
+			"Stepping down to follower due to higher term in RequestVoteRequest",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term)
+
 		n.timeoutTimer.Reset(rand.GenerateDuration(
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
@@ -234,6 +276,13 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 
 	// check if the node has not voted yet or if it has voted for the candidate.
 	if n.votedFor != nil && *n.votedFor != ID(req.CandidateId) {
+		slog.InfoContext(ctx,
+			"Rejecting RequestVoteRequest due to already voted for another candidate",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"voted_for", n.votedFor,
+			"candidate_id", req.CandidateId)
+
 		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
@@ -242,11 +291,29 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 
 	// check if the candidate's last log is at least as up-to-date as the node's last log
 	if !n.logs.IsMoreUpToDate(Term(req.LastLogTerm), Index(req.LastLogIndex)) {
+		slog.InfoContext(ctx,
+			"Rejecting RequestVoteRequest due to candidate's log not being up-to-date",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"candidate_id", req.CandidateId,
+			"candidate_last_log_index", req.LastLogIndex,
+			"candidate_last_log_term", req.LastLogTerm,
+			"node_last_log_index", n.logs.LastIndex(),
+			"node_last_log_term", n.logs.LastTerm())
+
 		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
 		}, nil
 	}
+
+	slog.InfoContext(ctx,
+		"Granting vote to candidate",
+		"node_id", n.id,
+		"current_term", n.currentTerm,
+		"candidate_id", req.CandidateId,
+		"candidate_last_log_index", req.LastLogIndex,
+		"candidate_last_log_term", req.LastLogTerm)
 
 	// Grant the vote to the candidate
 	candidateId := ID(req.CandidateId)
@@ -258,20 +325,48 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 }
 
 func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
+	slog.InfoContext(ctx,
+		"Received AppendEntriesRequest",
+		"node_id", n.id,
+		"request_term", req.Term,
+		"leader_id", req.LeaderId,
+		"prev_log_index", req.PrevLogIndex,
+		"prev_log_term", req.PrevLogTerm,
+		"entries_count", len(req.Entries),
+		"leader_commit", req.LeaderCommit)
+
 	// Reject the request if the term is less than the current term
 	if Term(req.Term) < n.currentTerm {
+		slog.InfoContext(ctx,
+			"Rejecting AppendEntriesRequest due to lower term",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term)
+
 		return &raftpb.AppendEntriesResponse{
 			Term:    uint64(n.currentTerm),
 			Success: false,
 		}, nil
 	}
 	if Term(req.Term) >= n.currentTerm {
+		slog.InfoContext(ctx,
+			"Resetting timeout timer due to AppendEntriesRequest",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term)
+
 		n.timeoutTimer.Reset(rand.GenerateDuration(
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
 		))
 	}
 	if Term(req.Term) > n.currentTerm {
+		slog.InfoContext(ctx,
+			"Stepping down to follower due to higher term in AppendEntriesRequest",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term)
+
 		n.currentTerm = Term(req.Term)
 		n.state = StateFollower
 		n.votedFor = nil // Reset votedFor when a new term is started
@@ -281,6 +376,14 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 
 	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if !n.logs.containsLog(Term(req.PrevLogTerm), Index(req.PrevLogIndex)) {
+		slog.InfoContext(ctx,
+			"Rejecting AppendEntriesRequest due to log mismatch",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term,
+			"prev_log_index", req.PrevLogIndex,
+			"prev_log_term", req.PrevLogTerm)
+
 		return &raftpb.AppendEntriesResponse{
 			Term:    uint64(n.currentTerm),
 			Success: false,
@@ -295,6 +398,13 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		}
 
 		// If the log entry conflicts a new one(same index but different term), delete the existing log entry and all entries after it
+		slog.InfoContext(ctx,
+			"Deleting conflicting log entries",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term,
+			"conflicting_index", entry.Index,
+			"conflicting_term", entry.Term)
 		n.logs = n.logs.DeleteAllAfter(Index(entry.Index))
 	}
 
@@ -309,14 +419,41 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 			},
 		}
 
+		slog.InfoContext(ctx,
+			"Appending new log entry",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term,
+			"entry_index", entry.Index,
+			"entry_term", entry.Term,
+			"entry_key", entry.Data.Key,
+			"entry_value", entry.Data.Value)
 		n.logs = append(n.logs, logEntry)
 	}
 
 	// Update commit index
 	if req.LeaderCommit > uint64(n.commitIndex) {
-		n.commitIndex = Index(math.Min(float64(req.LeaderCommit), float64(n.logs.LastIndex())))
+		newCommitIndex := Index(math.Min(float64(req.LeaderCommit), float64(n.logs.LastIndex())))
+		slog.InfoContext(ctx,
+			"Updating commit index",
+			"node_id", n.id,
+			"current_term", n.currentTerm,
+			"request_term", req.Term,
+			"leader_commit", req.LeaderCommit,
+			"new_commit_index", newCommitIndex)
+
+		n.commitIndex = newCommitIndex
 	}
 
+	slog.InfoContext(ctx,
+		"AppendEntriesRequest processed successfully",
+		"node_id", n.id,
+		"current_term", n.currentTerm,
+		"request_term", req.Term,
+		"prev_log_index", req.PrevLogIndex,
+		"prev_log_term", req.PrevLogTerm,
+		"entries_count", len(req.Entries),
+		"leader_commit", req.LeaderCommit)
 	return &raftpb.AppendEntriesResponse{
 		Term:    uint64(n.currentTerm),
 		Success: true,
