@@ -1,8 +1,10 @@
 package main
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 
 	"github.com/JunNishimura/graft/raft"
 	raftpb "github.com/JunNishimura/graft/raft/grpc"
@@ -19,6 +21,19 @@ var (
 		"localhost:8082",
 	}
 )
+
+func init() {
+	setupLogging()
+}
+
+func setupLogging() {
+	opts := &slog.HandlerOptions{
+		AddSource: true,
+		Level:     slog.LevelInfo,
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	slog.SetDefault(logger)
+}
 
 func main() {
 	var g errgroup.Group
