@@ -48,15 +48,15 @@ type Node struct {
 const (
 	electionTimeoutLowerBound = 150 * time.Millisecond
 	electionTimeoutUpperBound = 300 * time.Millisecond
-	heartbeatInterval         = 100 * time.Millisecond
+	heartbeatInterval         = 50 * time.Millisecond
 )
 
 var (
 	_ raftpb.RaftServiceServer = (*Node)(nil)
 )
 
-func NewNode(nodeID ID, cluster Cluster) *Node {
-	return &Node{
+func NewNode(ctx context.Context, nodeID ID, cluster Cluster) *Node {
+	node := &Node{
 		id: nodeID,
 		timeoutTimer: time.NewTimer(rand.GenerateDuration(
 			electionTimeoutLowerBound,
@@ -73,14 +73,18 @@ func NewNode(nodeID ID, cluster Cluster) *Node {
 		},
 		cluster: cluster,
 	}
+
+	slog.InfoContext(ctx, "Node initialized", "node_id", nodeID)
+	go node.waitForElectionTimeout(ctx)
+
+	return node
 }
 
-func (n *Node) Run(ctx context.Context) {
-	for {
-		select {
-		case <-n.timeoutTimer.C:
-			n.startElection(ctx)
-		}
+func (n *Node) waitForElectionTimeout(ctx context.Context) {
+	<-n.timeoutTimer.C
+
+	if n.state != StateLeader {
+		n.startElection(ctx)
 	}
 }
 
@@ -101,8 +105,8 @@ func (n *Node) startElection(ctx context.Context) {
 
 	respCh := make(chan *raftpb.RequestVoteResponse, n.cluster.NodeCount()-1)
 	for _, node := range n.cluster.OtherNodes(n.id) {
-		client := node.RPCClient
-		go func(client raftpb.RaftServiceClient) {
+		go func() {
+			client := node.RPCClient
 			req := &raftpb.RequestVoteRequest{
 				Term:         uint64(n.currentTerm),
 				CandidateId:  string(n.id),
@@ -113,15 +117,23 @@ func (n *Node) startElection(ctx context.Context) {
 			resp, err := client.RequestVote(ctx, req)
 			if err != nil {
 				slog.Error("failed to send RequestVoteRequest", "error", err)
+				respCh <- nil
 				return
 			}
 
 			respCh <- resp
-		}(client)
+		}()
 	}
 
 	voteCount := 1 // Count the vote for itself
-	for resp := range respCh {
+	for i := 0; i < n.cluster.NodeCount()-1; i++ {
+		resp := <-respCh
+
+		// If the request was failed, continue to the next response
+		if resp == nil {
+			continue
+		}
+
 		if resp.Term > uint64(n.currentTerm) {
 			slog.InfoContext(ctx,
 				"Received higher term during election, stepping down",
@@ -137,6 +149,7 @@ func (n *Node) startElection(ctx context.Context) {
 				electionTimeoutUpperBound,
 			))
 			close(respCh)
+			go n.waitForElectionTimeout(ctx)
 			return
 		}
 
@@ -154,8 +167,13 @@ func (n *Node) startElection(ctx context.Context) {
 
 			close(respCh)
 			n.becomeLeader(ctx)
+			return
 		}
 	}
+	close(respCh)
+
+	// If the node has not won the election, reset the timer and wait for the next election timeout
+	go n.waitForElectionTimeout(ctx)
 }
 
 func (n *Node) isElectionWinner(voteCount int) bool {
@@ -175,13 +193,24 @@ func (n *Node) becomeLeader(ctx context.Context) {
 	}
 	n.matchIndex = make([]Index, n.cluster.NodeCount())
 
-	// Send heartbeat to all clients to establish leadership
-	ticker := time.NewTicker(heartbeatInterval)
-	defer ticker.Stop()
+	go func() {
+		// Send heartbeat to all clients to establish leadership
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
 
-	for range ticker.C {
-		n.heartbeat(ctx)
-	}
+		for {
+			n.heartbeat(ctx)
+
+			<-ticker.C
+			if n.state != StateLeader {
+				slog.InfoContext(ctx,
+					"Stopping heartbeat as node is no longer leader",
+					"node_id", n.id,
+					"current_term", n.currentTerm)
+				return
+			}
+		}
+	}()
 }
 
 func (n *Node) heartbeat(ctx context.Context) {

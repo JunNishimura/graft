@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,6 +52,10 @@ func main() {
 		}
 	}()
 
+	slog.Info("starting Raft cluster", "nodes", cluster.Nodes())
+
+	ctx := context.Background()
+
 	for _, node := range cluster.Nodes() {
 		listner, err := net.Listen("tcp", node.Address)
 		if err != nil {
@@ -59,13 +65,13 @@ func main() {
 		defer listner.Close()
 
 		server := grpc.NewServer()
-		raftpb.RegisterRaftServiceServer(server, raft.NewNode(node.ID, cluster))
-
+		raftNode := raft.NewNode(ctx, node.ID, cluster)
+		raftpb.RegisterRaftServiceServer(server, raftNode)
 		reflection.Register(server)
 
 		g.Go(func() error {
 			if err := server.Serve(listner); err != nil && err != http.ErrServerClosed {
-				return err
+				return fmt.Errorf("failed to serve gRPC on %s: %w", node.Address, err)
 			}
 			return nil
 		})
