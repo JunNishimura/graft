@@ -23,13 +23,13 @@ func (l Logs) IsMoreUpToDate(candidateTerm Term, candidateIndex Index) bool {
 	}
 
 	lastLog := l[len(l)-1]
-	if lastLog.Term < candidateTerm {
-		return false
+	if lastLog.Term > candidateTerm {
+		return true
 	}
-	if lastLog.Term == candidateTerm && lastLog.Index <= candidateIndex {
-		return false
+	if lastLog.Term == candidateTerm && lastLog.Index > candidateIndex {
+		return true
 	}
-	return true
+	return false
 }
 
 func (l Logs) LastIndex() Index {

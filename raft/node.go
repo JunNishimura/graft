@@ -389,7 +389,7 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 	}
 
 	// check if the candidate's last log is at least as up-to-date as the node's last log
-	if !n.logs.IsMoreUpToDate(Term(req.LastLogTerm), Index(req.LastLogIndex)) {
+	if n.logs.IsMoreUpToDate(Term(req.LastLogTerm), Index(req.LastLogIndex)) {
 		slog.InfoContext(ctx,
 			"Rejecting RequestVoteRequest due to candidate's log not being up-to-date",
 			"node_id", n.id,
