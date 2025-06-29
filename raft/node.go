@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"sync"
 	"time"
 
 	raftpb "github.com/JunNishimura/graft/raft/grpc"
@@ -40,6 +41,8 @@ type Node struct {
 	matchIndex   []Index
 
 	stateMachine *StateMachine
+
+	mu sync.RWMutex
 
 	cluster Cluster
 	raftpb.UnimplementedRaftServiceServer
@@ -83,12 +86,17 @@ func NewNode(ctx context.Context, nodeID ID, cluster Cluster) *Node {
 func (n *Node) waitForElectionTimeout(ctx context.Context) {
 	<-n.timeoutTimer.C
 
-	if n.state != StateLeader {
+	n.mu.RLock()
+	isLeader := n.state == StateLeader
+	n.mu.RUnlock()
+
+	if !isLeader {
 		n.startElection(ctx)
 	}
 }
 
 func (n *Node) startElection(ctx context.Context) {
+	n.mu.Lock()
 	slog.InfoContext(ctx,
 		"Election timeout reached, starting a new election",
 		"node_id", n.id,
@@ -102,6 +110,7 @@ func (n *Node) startElection(ctx context.Context) {
 		electionTimeoutLowerBound,
 		electionTimeoutUpperBound,
 	))
+	n.mu.Unlock()
 
 	respCh := make(chan *raftpb.RequestVoteResponse, n.cluster.NodeCount()-1)
 	for _, node := range n.cluster.OtherNodes(n.id) {
@@ -134,6 +143,7 @@ func (n *Node) startElection(ctx context.Context) {
 			continue
 		}
 
+		n.mu.Lock()
 		if resp.Term > uint64(n.currentTerm) {
 			slog.InfoContext(ctx,
 				"Received higher term during election, stepping down",
@@ -148,10 +158,12 @@ func (n *Node) startElection(ctx context.Context) {
 				electionTimeoutLowerBound,
 				electionTimeoutUpperBound,
 			))
+			n.mu.Unlock()
 			close(respCh)
 			go n.waitForElectionTimeout(ctx)
 			return
 		}
+		n.mu.Unlock()
 
 		if !resp.VoteGranted {
 			continue
@@ -159,12 +171,6 @@ func (n *Node) startElection(ctx context.Context) {
 
 		voteCount++
 		if n.isElectionWinner(voteCount) {
-			slog.InfoContext(ctx,
-				"Election won, becoming leader",
-				"node_id", n.id,
-				"current_term", n.currentTerm,
-				"vote_count", voteCount)
-
 			close(respCh)
 			n.becomeLeader(ctx)
 			return
@@ -182,6 +188,11 @@ func (n *Node) isElectionWinner(voteCount int) bool {
 }
 
 func (n *Node) becomeLeader(ctx context.Context) {
+	n.mu.Lock()
+	slog.InfoContext(ctx,
+		"Election won, becoming leader",
+		"node_id", n.id)
+
 	n.state = StateLeader
 	n.votedFor = nil
 
@@ -193,6 +204,8 @@ func (n *Node) becomeLeader(ctx context.Context) {
 	}
 	n.matchIndex = make([]Index, n.cluster.NodeCount())
 
+	n.mu.Unlock()
+
 	go func() {
 		// Send heartbeat to all clients to establish leadership
 		ticker := time.NewTicker(heartbeatInterval)
@@ -202,13 +215,17 @@ func (n *Node) becomeLeader(ctx context.Context) {
 			n.heartbeat(ctx)
 
 			<-ticker.C
+
+			n.mu.RLock()
 			if n.state != StateLeader {
 				slog.InfoContext(ctx,
 					"Stopping heartbeat as node is no longer leader",
 					"node_id", n.id,
 					"current_term", n.currentTerm)
+				n.mu.RUnlock()
 				return
 			}
+			n.mu.RUnlock()
 		}
 	}()
 }
@@ -216,36 +233,57 @@ func (n *Node) becomeLeader(ctx context.Context) {
 func (n *Node) heartbeat(ctx context.Context) {
 	slog.InfoContext(ctx,
 		"Sending heartbeat to all nodes",
-		"node_id", n.id,
-		"current_term", n.currentTerm)
+		"node_id", n.id)
 
-	// TODO: process concurrently
+	respCh := make(chan *raftpb.AppendEntriesResponse, n.cluster.NodeCount()-1)
 	for i, node := range n.cluster.OtherNodes(n.id) {
-		client := node.RPCClient
-		prevLogIndex := uint64(0)
-		prevLogTerm := uint64(0)
-		prevLog := n.logs.FindByIndex(n.nextIndex[i] - 1)
-		if prevLog != nil {
-			prevLogIndex = uint64(prevLog.Index)
-			prevLogTerm = uint64(prevLog.Term)
-		}
+		go func() {
+			client := node.RPCClient
+			prevLogIndex := uint64(0)
+			prevLogTerm := uint64(0)
 
-		req := &raftpb.AppendEntriesRequest{
-			Term:         uint64(n.currentTerm),
-			LeaderId:     string(n.id),
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Entries:      nil, // No new entries in heartbeat
-			LeaderCommit: uint64(n.commitIndex),
-		}
+			n.mu.RLock()
+			defer n.mu.RUnlock()
+			prevLog := n.logs.FindByIndex(n.nextIndex[i] - 1)
+			if prevLog != nil {
+				prevLogIndex = uint64(prevLog.Index)
+				prevLogTerm = uint64(prevLog.Term)
+			}
 
-		resp, err := client.AppendEntries(ctx, req)
-		if err != nil {
-			slog.Error("failed to send AppendEntriesRequest", "error", err)
+			req := &raftpb.AppendEntriesRequest{
+				Term:         uint64(n.currentTerm),
+				LeaderId:     string(n.id),
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      nil, // No new entries in heartbeat
+				LeaderCommit: uint64(n.commitIndex),
+			}
+
+			resp, err := client.AppendEntries(ctx, req)
+			if err != nil {
+				slog.Error("failed to send AppendEntriesRequest", "error", err)
+				respCh <- nil
+				return
+			}
+
+			respCh <- resp
+		}()
+	}
+
+	for i := 0; i < n.cluster.NodeCount()-1; i++ {
+		resp := <-respCh
+		if resp == nil {
 			continue
 		}
 
+		n.mu.Lock()
 		if resp.Term > uint64(n.currentTerm) {
+			slog.InfoContext(ctx,
+				"Received higher term during heartbeat, stepping down",
+				"node_id", n.id,
+				"received_term", resp.Term,
+				"current_term", n.currentTerm)
+
 			n.state = StateFollower
 			n.votedFor = nil
 			n.currentTerm = Term(resp.Term)
@@ -253,15 +291,36 @@ func (n *Node) heartbeat(ctx context.Context) {
 				electionTimeoutLowerBound,
 				electionTimeoutUpperBound,
 			))
+			n.mu.Unlock()
+			close(respCh)
+			go n.waitForElectionTimeout(ctx)
 			return
 		}
+		n.mu.Unlock()
 
+		n.mu.Lock()
 		if resp.Success {
+			slog.InfoContext(ctx,
+				"Heartbeat successful",
+				"node_id", n.id,
+				"current_term", n.currentTerm,
+				"next_index", n.nextIndex[i],
+				"match_index", n.matchIndex[i])
+
 			n.matchIndex[i] = n.nextIndex[i] - 1
 		} else if n.nextIndex[i] > 0 {
+			slog.InfoContext(ctx,
+				"Heartbeat failed, decrementing nextIndex",
+				"node_id", n.id,
+				"current_term", n.currentTerm,
+				"next_index", n.nextIndex[i])
+
 			n.nextIndex[i]--
 		}
+		n.mu.Unlock()
 	}
+
+	close(respCh)
 }
 
 func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) (*raftpb.RequestVoteResponse, error) {
@@ -274,6 +333,7 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 		"last_log_term", req.LastLogTerm)
 
 	// check if the request term is greater than or equal to the current term.
+	n.mu.RLock()
 	if Term(req.Term) < n.currentTerm {
 		slog.InfoContext(ctx,
 			"Rejecting RequestVoteRequest due to lower term",
@@ -281,12 +341,17 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"current_term", n.currentTerm,
 			"request_term", req.Term)
 
-		return &raftpb.RequestVoteResponse{
+		resp := &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
-		}, nil
-	}
+		}
+		n.mu.RUnlock()
 
+		return resp, nil
+	}
+	n.mu.RUnlock()
+
+	n.mu.Lock()
 	if Term(req.Term) > n.currentTerm {
 		slog.InfoContext(ctx,
 			"Stepping down to follower due to higher term in RequestVoteRequest",
@@ -302,7 +367,9 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 		n.state = StateFollower
 		n.votedFor = nil // Reset votedFor when a new term is started
 	}
+	n.mu.Unlock()
 
+	n.mu.RLock()
 	// check if the node has not voted yet or if it has voted for the candidate.
 	if n.votedFor != nil && *n.votedFor != ID(req.CandidateId) {
 		slog.InfoContext(ctx,
@@ -312,10 +379,13 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"voted_for", n.votedFor,
 			"candidate_id", req.CandidateId)
 
-		return &raftpb.RequestVoteResponse{
+		resp := &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
-		}, nil
+		}
+		n.mu.RUnlock()
+
+		return resp, nil
 	}
 
 	// check if the candidate's last log is at least as up-to-date as the node's last log
@@ -330,10 +400,12 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"node_last_log_index", n.logs.LastIndex(),
 			"node_last_log_term", n.logs.LastTerm())
 
-		return &raftpb.RequestVoteResponse{
+		resp := &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
-		}, nil
+		}
+		n.mu.RUnlock()
+		return resp, nil
 	}
 
 	slog.InfoContext(ctx,
@@ -343,14 +415,19 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 		"candidate_id", req.CandidateId,
 		"candidate_last_log_index", req.LastLogIndex,
 		"candidate_last_log_term", req.LastLogTerm)
+	n.mu.RUnlock()
 
 	// Grant the vote to the candidate
+	n.mu.Lock()
 	candidateId := ID(req.CandidateId)
 	n.votedFor = &candidateId
-	return &raftpb.RequestVoteResponse{
+	resp := &raftpb.RequestVoteResponse{
 		Term:        uint64(n.currentTerm),
 		VoteGranted: true,
-	}, nil
+	}
+	n.mu.Unlock()
+
+	return resp, nil
 }
 
 func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
@@ -364,6 +441,7 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		"entries_count", len(req.Entries),
 		"leader_commit", req.LeaderCommit)
 
+	n.mu.RLock()
 	// Reject the request if the term is less than the current term
 	if Term(req.Term) < n.currentTerm {
 		slog.InfoContext(ctx,
@@ -372,11 +450,17 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 			"current_term", n.currentTerm,
 			"request_term", req.Term)
 
-		return &raftpb.AppendEntriesResponse{
+		resp := &raftpb.AppendEntriesResponse{
 			Term:    uint64(n.currentTerm),
 			Success: false,
-		}, nil
+		}
+		n.mu.RUnlock()
+
+		return resp, nil
 	}
+	n.mu.RUnlock()
+
+	n.mu.Lock()
 	if Term(req.Term) >= n.currentTerm {
 		slog.InfoContext(ctx,
 			"Resetting timeout timer due to AppendEntriesRequest",
@@ -413,10 +497,13 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 			"prev_log_index", req.PrevLogIndex,
 			"prev_log_term", req.PrevLogTerm)
 
-		return &raftpb.AppendEntriesResponse{
+		resp := &raftpb.AppendEntriesResponse{
 			Term:    uint64(n.currentTerm),
 			Success: false,
-		}, nil
+		}
+		n.mu.Unlock()
+
+		return resp, nil
 	}
 
 	// Delete conflicting log entries
@@ -483,8 +570,11 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		"prev_log_term", req.PrevLogTerm,
 		"entries_count", len(req.Entries),
 		"leader_commit", req.LeaderCommit)
-	return &raftpb.AppendEntriesResponse{
+	resp := &raftpb.AppendEntriesResponse{
 		Term:    uint64(n.currentTerm),
 		Success: true,
-	}, nil
+	}
+	n.mu.Unlock()
+
+	return resp, nil
 }
