@@ -333,7 +333,8 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 		"last_log_term", req.LastLogTerm)
 
 	// check if the request term is greater than or equal to the current term.
-	n.mu.RLock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	if Term(req.Term) < n.currentTerm {
 		slog.InfoContext(ctx,
 			"Rejecting RequestVoteRequest due to lower term",
@@ -341,35 +342,30 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"current_term", n.currentTerm,
 			"request_term", req.Term)
 
-		resp := &raftpb.RequestVoteResponse{
+		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
-		}
-		n.mu.RUnlock()
-
-		return resp, nil
+		}, nil
 	}
-	n.mu.RUnlock()
 
-	n.mu.Lock()
-	if Term(req.Term) > n.currentTerm {
+	if Term(req.Term) > n.currentTerm && n.state != StateFollower {
 		slog.InfoContext(ctx,
 			"Stepping down to follower due to higher term in RequestVoteRequest",
 			"node_id", n.id,
 			"current_term", n.currentTerm,
 			"request_term", req.Term)
 
-		n.timeoutTimer.Reset(rand.GenerateDuration(
-			electionTimeoutLowerBound,
-			electionTimeoutUpperBound,
-		))
-		n.currentTerm = Term(req.Term)
 		n.state = StateFollower
-		n.votedFor = nil // Reset votedFor when a new term is started
+		n.votedFor = nil
+		n.currentTerm = Term(req.Term)
+		n.timeoutTimer.Reset(rand.GenerateDuration(electionTimeoutLowerBound, electionTimeoutUpperBound))
+		go n.waitForElectionTimeout(ctx)
+		return &raftpb.RequestVoteResponse{
+			Term:        uint64(n.currentTerm),
+			VoteGranted: false,
+		}, nil
 	}
-	n.mu.Unlock()
 
-	n.mu.RLock()
 	// check if the node has not voted yet or if it has voted for the candidate.
 	if n.votedFor != nil && *n.votedFor != ID(req.CandidateId) {
 		slog.InfoContext(ctx,
@@ -379,13 +375,10 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"voted_for", n.votedFor,
 			"candidate_id", req.CandidateId)
 
-		resp := &raftpb.RequestVoteResponse{
+		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
-		}
-		n.mu.RUnlock()
-
-		return resp, nil
+		}, nil
 	}
 
 	// check if the candidate's last log is at least as up-to-date as the node's last log
@@ -400,12 +393,10 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"node_last_log_index", n.logs.LastIndex(),
 			"node_last_log_term", n.logs.LastTerm())
 
-		resp := &raftpb.RequestVoteResponse{
+		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
-		}
-		n.mu.RUnlock()
-		return resp, nil
+		}, nil
 	}
 
 	slog.InfoContext(ctx,
@@ -415,19 +406,20 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 		"candidate_id", req.CandidateId,
 		"candidate_last_log_index", req.LastLogIndex,
 		"candidate_last_log_term", req.LastLogTerm)
-	n.mu.RUnlock()
 
 	// Grant the vote to the candidate
-	n.mu.Lock()
+	n.state = StateFollower
+	n.timeoutTimer.Reset(rand.GenerateDuration(
+		electionTimeoutLowerBound,
+		electionTimeoutUpperBound,
+	))
+	n.currentTerm = Term(req.Term)
 	candidateId := ID(req.CandidateId)
 	n.votedFor = &candidateId
-	resp := &raftpb.RequestVoteResponse{
+	return &raftpb.RequestVoteResponse{
 		Term:        uint64(n.currentTerm),
 		VoteGranted: true,
-	}
-	n.mu.Unlock()
-
-	return resp, nil
+	}, nil
 }
 
 func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
