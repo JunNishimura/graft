@@ -433,7 +433,8 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		"entries_count", len(req.Entries),
 		"leader_commit", req.LeaderCommit)
 
-	n.mu.RLock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	// Reject the request if the term is less than the current term
 	if Term(req.Term) < n.currentTerm {
 		slog.InfoContext(ctx,
@@ -442,17 +443,12 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 			"current_term", n.currentTerm,
 			"request_term", req.Term)
 
-		resp := &raftpb.AppendEntriesResponse{
+		return &raftpb.AppendEntriesResponse{
 			Term:    uint64(n.currentTerm),
 			Success: false,
-		}
-		n.mu.RUnlock()
-
-		return resp, nil
+		}, nil
 	}
-	n.mu.RUnlock()
 
-	n.mu.Lock()
 	if Term(req.Term) >= n.currentTerm {
 		slog.InfoContext(ctx,
 			"Resetting timeout timer due to AppendEntriesRequest",
@@ -489,16 +485,14 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 			"prev_log_index", req.PrevLogIndex,
 			"prev_log_term", req.PrevLogTerm)
 
-		resp := &raftpb.AppendEntriesResponse{
+		return &raftpb.AppendEntriesResponse{
 			Term:    uint64(n.currentTerm),
 			Success: false,
-		}
-		n.mu.Unlock()
-
-		return resp, nil
+		}, nil
 	}
 
 	// Delete conflicting log entries
+	// TODO: Search minimum index to delete
 	for _, entry := range req.Entries {
 		matchLog := n.logs.FindByIndex(Index(entry.Index))
 		if matchLog == nil || matchLog.Term == Term(entry.Term) {
@@ -562,11 +556,8 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		"prev_log_term", req.PrevLogTerm,
 		"entries_count", len(req.Entries),
 		"leader_commit", req.LeaderCommit)
-	resp := &raftpb.AppendEntriesResponse{
+	return &raftpb.AppendEntriesResponse{
 		Term:    uint64(n.currentTerm),
 		Success: true,
-	}
-	n.mu.Unlock()
-
-	return resp, nil
+	}, nil
 }
