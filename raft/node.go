@@ -491,23 +491,26 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		}, nil
 	}
 
-	// Delete conflicting log entries
-	// TODO: Search minimum index to delete
+	// search minimum index in the entries
+	minEntry := req.Entries[0]
 	for _, entry := range req.Entries {
-		matchLog := n.logs.FindByIndex(Index(entry.Index))
-		if matchLog == nil || matchLog.Term == Term(entry.Term) {
-			continue
+		if entry.Index < minEntry.Index {
+			minEntry = entry
 		}
+	}
 
+	// Delete conflicting log entries
+	matchLog := n.logs.FindByIndex(Index(minEntry.Index))
+	if matchLog != nil && matchLog.Term != Term(minEntry.Term) {
 		// If the log entry conflicts a new one(same index but different term), delete the existing log entry and all entries after it
 		slog.InfoContext(ctx,
 			"Deleting conflicting log entries",
 			"node_id", n.id,
 			"current_term", n.currentTerm,
 			"request_term", req.Term,
-			"conflicting_index", entry.Index,
-			"conflicting_term", entry.Term)
-		n.logs = n.logs.DeleteAllAfter(Index(entry.Index))
+			"conflicting_index", minEntry.Index,
+			"conflicting_term", minEntry.Term)
+		n.logs = n.logs.DeleteAllAfter(Index(minEntry.Index))
 	}
 
 	// Append new log entries
