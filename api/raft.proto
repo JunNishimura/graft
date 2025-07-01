@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+option go_package = "raft/grpc";
+
+package raft;
+
+service RaftService {
+	rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse);
+	rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+}
+
+message RequestVoteRequest {
+	uint64 term = 1;
+	string candidateId = 2;
+	uint64 lastLogIndex = 3;
+	uint64 lastLogTerm = 4;
+}
+
+message RequestVoteResponse {
+	uint64 term = 1;
+	bool voteGranted = 2;
+}
+
+message EntryData {
+	string key = 1;
+	uint64 value = 2;
+}
+
+message Entry {
+	uint64 term = 1;
+	uint64 index = 2;
+	EntryData data = 3;
+}
+
+message AppendEntriesRequest {
+	uint64 term = 1;
+	string leaderId = 2;
+	uint64 prevLogIndex = 3;
+	uint64 prevLogTerm = 4;
+	repeated Entry entries = 5;
+	uint64 leaderCommit = 6;
+}
+
+message AppendEntriesResponse {
+	uint64 term = 1;
+	bool success = 2;
+}
