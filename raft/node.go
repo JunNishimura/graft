@@ -114,7 +114,7 @@ func (n *Node) startElection(ctx context.Context) {
 
 	respCh := make(chan *raftpb.RequestVoteResponse, n.cluster.NodeCount()-1)
 	for _, node := range n.cluster.OtherNodes(n.id) {
-		go func() {
+		go func(node *NodeInfo) {
 			client := node.RPCClient
 			req := &raftpb.RequestVoteRequest{
 				Term:         uint64(n.currentTerm),
@@ -131,7 +131,7 @@ func (n *Node) startElection(ctx context.Context) {
 			}
 
 			respCh <- resp
-		}()
+		}(node)
 	}
 
 	voteCount := 1 // Count the vote for itself
@@ -237,7 +237,7 @@ func (n *Node) heartbeat(ctx context.Context) {
 
 	respCh := make(chan *raftpb.AppendEntriesResponse, n.cluster.NodeCount()-1)
 	for i, node := range n.cluster.OtherNodes(n.id) {
-		go func() {
+		go func(i int, node *NodeInfo) {
 			client := node.RPCClient
 			prevLogIndex := uint64(0)
 			prevLogTerm := uint64(0)
@@ -267,7 +267,7 @@ func (n *Node) heartbeat(ctx context.Context) {
 			}
 
 			respCh <- resp
-		}()
+		}(i, node)
 	}
 
 	for i := 0; i < n.cluster.NodeCount()-1; i++ {
