@@ -137,15 +137,8 @@ func (n *Node) startElection(ctx context.Context) {
 					"received_term", resp.Term,
 					"current_term", n.currentTerm)
 
-				n.state = StateFollower
-				n.votedFor = nil
-				n.currentTerm = Term(resp.Term)
-				n.timeoutTimer.Reset(rand.GenerateDuration(
-					electionTimeoutLowerBound,
-					electionTimeoutUpperBound,
-				))
+				n.becomeFollower(ctx, Term(resp.Term))
 				n.mu.Unlock()
-				go n.waitForElectionTimeout(ctx)
 				return
 			}
 
@@ -170,6 +163,15 @@ func (n *Node) startElection(ctx context.Context) {
 func (n *Node) isElectionWinner(voteCount int) bool {
 	// If the node has received more than half of the votes, it is the leader
 	return voteCount > n.cluster.NodeCount()/2
+}
+
+// expect lock to be held
+func (n *Node) becomeFollower(ctx context.Context, term Term) {
+	n.state = StateFollower
+	n.votedFor = nil
+	n.currentTerm = Term(term)
+	n.timeoutTimer.Reset(rand.GenerateDuration(electionTimeoutLowerBound, electionTimeoutUpperBound))
+	go n.waitForElectionTimeout(ctx)
 }
 
 func (n *Node) becomeLeader(ctx context.Context) {
@@ -256,14 +258,7 @@ func (n *Node) heartbeat(ctx context.Context) {
 					"received_term", resp.Term,
 					"current_term", n.currentTerm)
 
-				n.state = StateFollower
-				n.votedFor = nil
-				n.currentTerm = Term(resp.Term)
-				n.timeoutTimer.Reset(rand.GenerateDuration(
-					electionTimeoutLowerBound,
-					electionTimeoutUpperBound,
-				))
-				go n.waitForElectionTimeout(ctx)
+				n.becomeFollower(ctx, Term(resp.Term))
 				return
 			}
 
@@ -321,11 +316,7 @@ func (n *Node) RequestVote(ctx context.Context, req *raftpb.RequestVoteRequest) 
 			"current_term", n.currentTerm,
 			"request_term", req.Term)
 
-		n.state = StateFollower
-		n.votedFor = nil
-		n.currentTerm = Term(req.Term)
-		n.timeoutTimer.Reset(rand.GenerateDuration(electionTimeoutLowerBound, electionTimeoutUpperBound))
-		go n.waitForElectionTimeout(ctx)
+		n.becomeFollower(ctx, Term(req.Term))
 		return &raftpb.RequestVoteResponse{
 			Term:        uint64(n.currentTerm),
 			VoteGranted: false,
