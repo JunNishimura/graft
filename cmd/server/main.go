@@ -64,14 +64,23 @@ func main() {
 		}
 		defer listner.Close()
 
-		server := grpc.NewServer()
+		grpcServer := grpc.NewServer()
 		raftNode := raft.NewNode(ctx, node.ID, cluster)
-		raftpb.RegisterRaftServiceServer(server, raftNode)
-		reflection.Register(server)
-
+		raftpb.RegisterRaftServiceServer(grpcServer, raftNode)
+		reflection.Register(grpcServer)
 		g.Go(func() error {
-			if err := server.Serve(listner); err != nil && err != http.ErrServerClosed {
+			if err := grpcServer.Serve(listner); err != nil && err != http.ErrServerClosed {
 				return fmt.Errorf("failed to serve gRPC on %s: %w", node.Address, err)
+			}
+			return nil
+		})
+
+		httpServer := &http.Server{
+			Handler: raftNode.HandleClientRequest(ctx),
+		}
+		g.Go(func() error {
+			if err := httpServer.Serve(listner); err != nil && err != http.ErrServerClosed {
+				return fmt.Errorf("failed to serve HTTP on %s: %w", node.Address, err)
 			}
 			return nil
 		})
