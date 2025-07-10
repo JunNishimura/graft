@@ -25,19 +25,6 @@ func (id ID) Equal(other ID) bool {
 	return id == other
 }
 
-type StateMachine struct {
-	m map[string]uint64
-}
-
-func (s *StateMachine) Get(key string) (uint64, bool) {
-	value, exists := s.m[key]
-	return value, exists
-}
-
-func (s *StateMachine) Set(key string, value uint64) {
-	s.m[key] = value
-}
-
 type Node struct {
 	id           ID
 	leaderID     *ID
@@ -53,7 +40,8 @@ type Node struct {
 
 	stateMachine *StateMachine
 
-	mu sync.RWMutex
+	mu            sync.RWMutex
+	triggerAEChan chan struct{}
 
 	cluster Cluster
 	raftpb.UnimplementedRaftServiceServer
@@ -76,16 +64,15 @@ func NewNode(ctx context.Context, nodeID ID, cluster Cluster) *Node {
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
 		)),
-		state:       StateFollower,
-		currentTerm: 0,
-		votedFor:    nil,
-		logs:        make(Logs, 0),
-		commitIndex: 0,
-		lastApplied: 0,
-		stateMachine: &StateMachine{
-			m: make(map[string]uint64),
-		},
-		cluster: cluster,
+		state:         StateFollower,
+		currentTerm:   0,
+		votedFor:      nil,
+		logs:          make(Logs, 0),
+		commitIndex:   0,
+		lastApplied:   0,
+		stateMachine:  NewStateMachine(),
+		cluster:       cluster,
+		triggerAEChan: make(chan struct{}, 1),
 	}
 
 	slog.InfoContext(ctx, "Node initialized", "node_id", nodeID)
@@ -204,33 +191,52 @@ func (n *Node) becomeLeader(ctx context.Context) {
 	n.mu.Unlock()
 
 	go func() {
-		// Send heartbeat to all clients to establish leadership
-		ticker := time.NewTicker(heartbeatInterval)
-		defer ticker.Stop()
+		n.sendAppendEntries(ctx)
 
+		timer := time.NewTimer(heartbeatInterval)
 		for {
-			n.heartbeat(ctx)
+			doSend := false
+			select {
+			case <-timer.C:
+				doSend = true
 
-			<-ticker.C
+				timer.Stop()
+				timer.Reset(heartbeatInterval)
+			case _, ok := <-n.triggerAEChan:
+				if !ok {
+					return
+				} else {
+					doSend = true
+				}
 
-			n.mu.RLock()
-			if n.state != StateLeader {
-				slog.InfoContext(ctx,
-					"Stopping heartbeat as node is no longer leader",
-					"node_id", n.id,
-					"current_term", n.currentTerm)
-				n.mu.RUnlock()
-				return
+				if !timer.Stop() {
+					<-timer.C // Drain the channel if the timer was already running
+				}
+				timer.Reset(heartbeatInterval)
 			}
-			n.mu.RUnlock()
+
+			if doSend {
+				n.mu.RLock()
+				if n.state != StateLeader {
+					slog.InfoContext(ctx, "Stopping heartbeat as node is no longer leader", "node_id", n.id)
+					n.mu.RUnlock()
+					return
+				}
+				n.mu.RUnlock()
+				n.sendAppendEntries(ctx)
+			}
 		}
 	}()
 }
 
-func (n *Node) heartbeat(ctx context.Context) {
-	slog.InfoContext(ctx,
-		"Sending heartbeat to all nodes",
-		"node_id", n.id)
+func (n *Node) sendAppendEntries(ctx context.Context) {
+	n.mu.RLock()
+	if n.state != StateLeader {
+		slog.InfoContext(ctx, "Not sending AppendEntries as node is not leader", "node_id", n.id)
+		n.mu.RUnlock()
+		return
+	}
+	n.mu.RUnlock()
 
 	for i, node := range n.cluster.OtherNodes(n.id) {
 		go func(i int, node *NodeInfo) {
@@ -564,6 +570,8 @@ func (n *Node) HandleClientRequest(ctx context.Context) http.Handler {
 		// Append the logs to the node's log
 		n.logs.Append(newLogs...)
 		slog.InfoContext(ctx, "Logs appended", "logs", newLogs)
+
+		n.triggerAEChan <- struct{}{}
 
 		n.mu.Unlock()
 
