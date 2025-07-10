@@ -2,8 +2,10 @@ package raft
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"math"
+	"net/http"
 	"sync"
 	"time"
 
@@ -23,10 +25,6 @@ func (id ID) Equal(other ID) bool {
 	return id == other
 }
 
-type StateMachine struct {
-	m map[string]uint64
-}
-
 type Node struct {
 	id           ID
 	leaderID     *ID
@@ -42,7 +40,8 @@ type Node struct {
 
 	stateMachine *StateMachine
 
-	mu sync.RWMutex
+	mu            sync.RWMutex
+	triggerAEChan chan struct{}
 
 	cluster Cluster
 	raftpb.UnimplementedRaftServiceServer
@@ -65,16 +64,15 @@ func NewNode(ctx context.Context, nodeID ID, cluster Cluster) *Node {
 			electionTimeoutLowerBound,
 			electionTimeoutUpperBound,
 		)),
-		state:       StateFollower,
-		currentTerm: 0,
-		votedFor:    nil,
-		logs:        make(Logs, 0),
-		commitIndex: 0,
-		lastApplied: 0,
-		stateMachine: &StateMachine{
-			m: make(map[string]uint64),
-		},
-		cluster: cluster,
+		state:         StateFollower,
+		currentTerm:   0,
+		votedFor:      nil,
+		logs:          make(Logs, 0),
+		commitIndex:   0,
+		lastApplied:   0,
+		stateMachine:  NewStateMachine(),
+		cluster:       cluster,
+		triggerAEChan: make(chan struct{}, 1),
 	}
 
 	slog.InfoContext(ctx, "Node initialized", "node_id", nodeID)
@@ -148,7 +146,7 @@ func (n *Node) startElection(ctx context.Context) {
 			}
 
 			voteCount++
-			if n.isElectionWinner(voteCount) {
+			if n.isOverMajority(voteCount) {
 				n.mu.Unlock()
 				n.becomeLeader(ctx)
 				return
@@ -160,8 +158,7 @@ func (n *Node) startElection(ctx context.Context) {
 	go n.waitForElectionTimeout(ctx)
 }
 
-func (n *Node) isElectionWinner(voteCount int) bool {
-	// If the node has received more than half of the votes, it is the leader
+func (n *Node) isOverMajority(voteCount int) bool {
 	return voteCount > n.cluster.NodeCount()/2
 }
 
@@ -194,33 +191,52 @@ func (n *Node) becomeLeader(ctx context.Context) {
 	n.mu.Unlock()
 
 	go func() {
-		// Send heartbeat to all clients to establish leadership
-		ticker := time.NewTicker(heartbeatInterval)
-		defer ticker.Stop()
+		n.sendAppendEntries(ctx)
 
+		timer := time.NewTimer(heartbeatInterval)
 		for {
-			n.heartbeat(ctx)
+			doSend := false
+			select {
+			case <-timer.C:
+				doSend = true
 
-			<-ticker.C
+				timer.Stop()
+				timer.Reset(heartbeatInterval)
+			case _, ok := <-n.triggerAEChan:
+				if !ok {
+					return
+				} else {
+					doSend = true
+				}
 
-			n.mu.RLock()
-			if n.state != StateLeader {
-				slog.InfoContext(ctx,
-					"Stopping heartbeat as node is no longer leader",
-					"node_id", n.id,
-					"current_term", n.currentTerm)
-				n.mu.RUnlock()
-				return
+				if !timer.Stop() {
+					<-timer.C // Drain the channel if the timer was already running
+				}
+				timer.Reset(heartbeatInterval)
 			}
-			n.mu.RUnlock()
+
+			if doSend {
+				n.mu.RLock()
+				if n.state != StateLeader {
+					slog.InfoContext(ctx, "Stopping heartbeat as node is no longer leader", "node_id", n.id)
+					n.mu.RUnlock()
+					return
+				}
+				n.mu.RUnlock()
+				n.sendAppendEntries(ctx)
+			}
 		}
 	}()
 }
 
-func (n *Node) heartbeat(ctx context.Context) {
-	slog.InfoContext(ctx,
-		"Sending heartbeat to all nodes",
-		"node_id", n.id)
+func (n *Node) sendAppendEntries(ctx context.Context) {
+	n.mu.RLock()
+	if n.state != StateLeader {
+		slog.InfoContext(ctx, "Not sending AppendEntries as node is not leader", "node_id", n.id)
+		n.mu.RUnlock()
+		return
+	}
+	n.mu.RUnlock()
 
 	for i, node := range n.cluster.OtherNodes(n.id) {
 		go func(i int, node *NodeInfo) {
@@ -522,4 +538,131 @@ func (n *Node) AppendEntries(ctx context.Context, req *raftpb.AppendEntriesReque
 		Term:    uint64(n.currentTerm),
 		Success: true,
 	}, nil
+}
+
+func (n *Node) HandleClientRequest(ctx context.Context) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/raft/append" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		// decode the request body
+		var reqData map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		// Process the client request here
+		slog.InfoContext(ctx, "Processing client request", "request", reqData)
+
+		n.mu.Lock()
+
+		// Convert the request to a log entry
+		newLogs := convertToLogs(reqData, n.currentTerm, n.logs.LastIndex())
+		if len(newLogs) == 0 {
+			http.Error(w, "no valid logs to append", http.StatusBadRequest)
+			return
+		}
+		newEntries := newLogs.convertToLogEntries()
+
+		// Append the logs to the node's log
+		n.logs.Append(newLogs...)
+		slog.InfoContext(ctx, "Logs appended", "logs", newLogs)
+
+		n.triggerAEChan <- struct{}{}
+
+		n.mu.Unlock()
+
+		// Replicate the logs to other nodes
+		replicatedCount := 1
+		for i, node := range n.cluster.OtherNodes(n.id) {
+			go func(i int, node *NodeInfo) {
+				client := node.RPCClient
+				prevLogIndex := uint64(0)
+				prevLogTerm := uint64(0)
+
+				n.mu.Lock()
+				defer n.mu.Unlock()
+				prevLog := n.logs.FindByIndex(n.nextIndex[i] - 1)
+				if prevLog != nil {
+					prevLogIndex = uint64(prevLog.Index)
+					prevLogTerm = uint64(prevLog.Term)
+				}
+
+				req := &raftpb.AppendEntriesRequest{
+					Term:         uint64(n.currentTerm),
+					LeaderId:     string(n.id),
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
+					Entries:      newEntries,
+					LeaderCommit: uint64(n.commitIndex),
+				}
+
+				resp, err := client.AppendEntries(ctx, req)
+				if err != nil {
+					slog.Error("failed to send AppendEntriesRequest", "error", err)
+					return
+				}
+
+				if resp.Term > uint64(n.currentTerm) {
+					slog.InfoContext(ctx,
+						"Received higher term during AppendEntriesRequest, stepping down",
+						"node_id", n.id,
+						"received_term", resp.Term,
+						"current_term", n.currentTerm)
+
+					n.becomeFollower(ctx, Term(resp.Term))
+					return
+				}
+
+				if !resp.Success {
+					slog.InfoContext(ctx, "AppendEntriesRequest failed", "node_from", node.ID)
+
+					return
+				}
+
+				slog.InfoContext(ctx, "AppendEntriesRequest successful", "node_from", node.ID)
+				replicatedCount++
+
+				if n.isOverMajority(replicatedCount) {
+					slog.InfoContext(ctx, "Majority replicated, updating commit index", "node_id", n.id)
+					n.commitIndex = n.logs.LastIndex()
+
+					if n.commitIndex > n.lastApplied {
+						n.applyStateMachine(ctx)
+					}
+				}
+			}(i, node)
+		}
+
+		// Respond to the client
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+func (n *Node) applyStateMachine(ctx context.Context) {
+	slog.InfoContext(ctx, "Committing logs to state machine", "node_id", n.id)
+
+	for n.lastApplied < n.commitIndex {
+		n.lastApplied++
+		logEntry := n.logs.FindByIndex(n.lastApplied)
+		if logEntry == nil {
+			slog.WarnContext(ctx, "Log entry not found for last applied index", "last_applied", n.lastApplied)
+			continue
+		}
+
+		key := logEntry.Data.Key
+		value := logEntry.Data.Value
+
+		slog.InfoContext(ctx,
+			"Applying log entry to state machine",
+			"node_id", n.id,
+			"last_applied", n.lastApplied,
+			"key", key,
+			"value", value)
+
+		n.stateMachine.Set(key, value)
+	}
 }
