@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	raftpb "github.com/JunNishimura/graft/raft/grpc"
-	"github.com/JunNishimura/graft/rand"
-	"github.com/JunNishimura/graft/tokens"
+	raftpb "github.com/JunNishimura/graft/mine/raft/grpc"
+	"github.com/JunNishimura/graft/mine/rand"
+	"github.com/JunNishimura/graft/mine/tokens"
 )
 
 type ID string

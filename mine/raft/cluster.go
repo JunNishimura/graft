@@ -3,7 +3,7 @@ package raft
 import (
 	"fmt"
 
-	raftpb "github.com/JunNishimura/graft/raft/grpc"
+	raftpb "github.com/JunNishimura/graft/mine/raft/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

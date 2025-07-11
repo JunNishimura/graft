@@ -3,7 +3,7 @@ package raft
 import (
 	"log/slog"
 
-	raftpb "github.com/JunNishimura/graft/raft/grpc"
+	raftpb "github.com/JunNishimura/graft/mine/raft/grpc"
 )
 
 type Index uint64
