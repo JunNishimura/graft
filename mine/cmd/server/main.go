@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/JunNishimura/graft/raft"
-	raftpb "github.com/JunNishimura/graft/raft/grpc"
+	"github.com/JunNishimura/graft/mine/raft"
+	raftpb "github.com/JunNishimura/graft/mine/raft/grpc"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
