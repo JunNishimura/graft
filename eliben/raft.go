@@ -23,6 +23,21 @@ const (
 	Dead
 )
 
+func (s CMState) String() string {
+	switch s {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	case Dead:
+		return "Dead"
+	default:
+		panic("unreachable: unknown CMState")
+	}
+}
+
 type ConsensusModule struct {
 	mu sync.Mutex
 
@@ -38,6 +53,38 @@ type ConsensusModule struct {
 
 	state              CMState
 	electionResetEvent time.Time
+}
+
+func NewConsensusModule(id int, peerIds []int, server *Server, ready <-chan any) *ConsensusModule {
+	cm := new(ConsensusModule)
+	cm.id = id
+	cm.peerIds = peerIds
+	cm.server = server
+	cm.state = Follower
+	cm.votedFor = -1
+
+	go func() {
+		<-ready
+		cm.mu.Lock()
+		cm.electionResetEvent = time.Now()
+		cm.mu.Unlock()
+		cm.runElectionTimer()
+	}()
+
+	return cm
+}
+
+func (cm *ConsensusModule) Report() (id, term int, isLeader bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.id, cm.currentTerm, cm.state == Leader
+}
+
+func (cm *ConsensusModule) Stop() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.state = Dead
+	cm.dlog("becomes Dead")
 }
 
 const DebugCM = 1
