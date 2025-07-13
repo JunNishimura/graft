@@ -38,6 +38,12 @@ func (s CMState) String() string {
 	}
 }
 
+type CommitEntry struct {
+	Command any
+	Index   int
+	Term    int
+}
+
 type ConsensusModule struct {
 	mu sync.Mutex
 
@@ -47,21 +53,34 @@ type ConsensusModule struct {
 
 	server *Server
 
+	commitChan         chan<- CommitEntry
+	newCommitReadyChan chan struct{}
+
 	currentTerm int
 	votedFor    int
 	log         []LogEntry
 
+	commitIndex        int
+	lastApplied        int
 	state              CMState
 	electionResetEvent time.Time
+
+	nextIndex  map[int]int
+	matchIndex map[int]int
 }
 
-func NewConsensusModule(id int, peerIds []int, server *Server, ready <-chan any) *ConsensusModule {
+func NewConsensusModule(id int, peerIds []int, server *Server, ready <-chan any, commitChan chan<- CommitEntry) *ConsensusModule {
 	cm := new(ConsensusModule)
 	cm.id = id
 	cm.peerIds = peerIds
 	cm.server = server
+	cm.commitChan = commitChan
+	cm.newCommitReadyChan = make(chan struct{}, 16)
 	cm.state = Follower
 	cm.votedFor = -1
+	cm.commitIndex = -1
+	cm.nextIndex = make(map[int]int)
+	cm.matchIndex = make(map[int]int)
 
 	go func() {
 		<-ready
@@ -214,12 +233,26 @@ func (cm *ConsensusModule) leaderSendHeartbeats() {
 	cm.mu.Unlock()
 
 	for _, peerId := range cm.peerIds {
-		args := AppendEntriesArgs{
-			Term:     savedCurrentTerm,
-			LeaderId: cm.id,
-		}
 		go func(peerId int) {
-			cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, 0, args)
+			cm.mu.Lock()
+			ni := cm.nextIndex[peerId]
+			prevLogIndex := ni - 1
+			prevLogTerm := -1
+			if prevLogIndex >= 0 {
+				prevLogTerm = cm.log[prevLogIndex].Term
+			}
+			entries := cm.log[ni:]
+
+			args := AppendEntriesArgs{
+				Term:         savedCurrentTerm,
+				LeaderId:     cm.id,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      entries,
+				LeaderCommit: cm.commitIndex,
+			}
+			cm.mu.Unlock()
+			cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, ni, args)
 			var reply AppendEntriesReply
 			if err := cm.server.Call(peerId, "ConsensusModule.AppendEntries", args, &reply); err == nil {
 				cm.mu.Lock()
@@ -229,9 +262,64 @@ func (cm *ConsensusModule) leaderSendHeartbeats() {
 					cm.becomeFollower(reply.Term)
 					return
 				}
+
+				if cm.state == Leader && savedCurrentTerm == reply.Term {
+					if reply.Success {
+						cm.nextIndex[peerId] = ni + len(entries)
+						cm.matchIndex[peerId] = cm.nextIndex[peerId] - 1
+						cm.dlog("AppendEntries reply from %d success: nextIndex := %d, matchIndex := %d", peerId, cm.nextIndex[peerId], cm.matchIndex[peerId])
+
+						savedCommitIndex := cm.commitIndex
+						for i := cm.commitIndex + 1; i < len(cm.log); i++ {
+							if cm.log[i].Term != cm.currentTerm {
+								continue
+							}
+							matchCount := 1
+							for _, peerId := range cm.peerIds {
+								if cm.matchIndex[peerId] >= i {
+									matchCount++
+								}
+							}
+							if matchCount*2 > len(cm.peerIds)+1 {
+								cm.commitIndex = i
+							}
+						}
+						if cm.commitIndex != savedCommitIndex {
+							cm.dlog("leader sets commitIndex := %d", cm.commitIndex)
+							cm.newCommitReadyChan <- struct{}{}
+						}
+					} else {
+						cm.nextIndex[peerId] = ni - 1
+						cm.dlog("AppendEntries reply from %d !success: nextIndex := %d", peerId, cm.nextIndex[peerId])
+					}
+				}
 			}
 		}(peerId)
 	}
+}
+
+func (cm *ConsensusModule) commitChanSender() {
+	for range cm.newCommitReadyChan {
+		cm.mu.Lock()
+		savedTerm := cm.currentTerm
+		savedLastApplied := cm.lastApplied
+		var entries []LogEntry
+		if cm.commitIndex > cm.lastApplied {
+			entries = cm.log[cm.lastApplied+1 : cm.commitIndex+1]
+			cm.lastApplied = cm.commitIndex
+		}
+		cm.mu.Unlock()
+		cm.dlog("commitChanSender entries=%v, savedLastApplied=%d", entries, savedLastApplied)
+
+		for i, entry := range entries {
+			cm.commitChan <- CommitEntry{
+				Command: entry.Command,
+				Index:   savedLastApplied + i + 1,
+				Term:    savedTerm,
+			}
+		}
+	}
+	cm.dlog("commitChanSender done")
 }
 
 func (cm *ConsensusModule) becomeFollower(term int) {
@@ -242,6 +330,22 @@ func (cm *ConsensusModule) becomeFollower(term int) {
 	cm.electionResetEvent = time.Now()
 
 	go cm.runElectionTimer()
+}
+
+func (cm *ConsensusModule) Submit(command any) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.dlog("Submit received by %v: %v", cm.state, command)
+	if cm.state != Leader {
+		return false
+	}
+	cm.log = append(cm.log, LogEntry{
+		Command: command,
+		Term:    cm.currentTerm,
+	})
+	cm.dlog("... log=%v", cm.log)
+	return true
 }
 
 type RequestVoteArgs struct {
