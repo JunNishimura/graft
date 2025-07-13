@@ -3,6 +3,7 @@ module github.com/JunNishimura/graft
 go 1.24.4
 
 require (
+	github.com/fortytw2/leaktest v1.3.0
 	github.com/oklog/ulid/v2 v2.1.1
 	golang.org/x/sync v0.15.0
 	google.golang.org/grpc v1.73.0
