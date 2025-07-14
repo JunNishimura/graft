@@ -420,7 +420,37 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 			cm.becomeFollower(args.Term)
 		}
 		cm.electionResetEvent = time.Now()
-		reply.Success = true
+
+		if args.PrevLogIndex == -1 ||
+			(args.PrevLogIndex < len(cm.log) && cm.log[args.PrevLogIndex].Term == args.PrevLogTerm) {
+			reply.Success = true
+
+			logInsertIndex := args.PrevLogIndex + 1
+			newEntriesIndex := 0
+
+			for {
+				if logInsertIndex >= len(cm.log) || newEntriesIndex >= len(args.Entries) {
+					break
+				}
+				if cm.log[logInsertIndex].Term != args.Entries[newEntriesIndex].Term {
+					break
+				}
+				logInsertIndex++
+				newEntriesIndex++
+			}
+
+			if newEntriesIndex < len(args.Entries) {
+				cm.dlog("... inserting entries %v from index %d", args.Entries[newEntriesIndex:], logInsertIndex)
+				cm.log = append(cm.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
+				cm.dlog("... log is now: %v", cm.log)
+			}
+
+			if args.LeaderCommit > cm.commitIndex {
+				cm.commitIndex = min(args.LeaderCommit, len(cm.log)-1)
+				cm.dlog("... setting commitIndex=%d", cm.commitIndex)
+				cm.newCommitReadyChan <- struct{}{}
+			}
+		}
 	}
 
 	reply.Term = cm.currentTerm
