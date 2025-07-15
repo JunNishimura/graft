@@ -79,6 +79,7 @@ func NewConsensusModule(id int, peerIds []int, server *Server, ready <-chan any,
 	cm.state = Follower
 	cm.votedFor = -1
 	cm.commitIndex = -1
+	cm.lastApplied = -1
 	cm.nextIndex = make(map[int]int)
 	cm.matchIndex = make(map[int]int)
 
@@ -90,6 +91,7 @@ func NewConsensusModule(id int, peerIds []int, server *Server, ready <-chan any,
 		cm.runElectionTimer()
 	}()
 
+	go cm.commitChanSender()
 	return cm
 }
 
@@ -104,6 +106,7 @@ func (cm *ConsensusModule) Stop() {
 	defer cm.mu.Unlock()
 	cm.state = Dead
 	cm.dlog("becomes Dead")
+	close(cm.newCommitReadyChan)
 }
 
 const DebugCM = 1
