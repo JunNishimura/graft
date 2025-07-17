@@ -15,6 +15,7 @@ type Harness struct {
 	mu sync.Mutex
 
 	cluster []*Server
+	storage []*MapStorage
 
 	commitChans []chan CommitEntry
 
@@ -32,6 +33,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 	commitChans := make([]chan CommitEntry, n)
 	commits := make([][]CommitEntry, n)
 	ready := make(chan any)
+	storage := make([]*MapStorage, n)
 
 	for i := 0; i < n; i++ {
 		peerIds := make([]int, 0)
@@ -41,8 +43,9 @@ func NewHarness(t *testing.T, n int) *Harness {
 			}
 		}
 
+		storage[i] = NewMapStorage()
 		commitChans[i] = make(chan CommitEntry)
-		ns[i] = NewServer(i, peerIds, ready, commitChans[i])
+		ns[i] = NewServer(i, peerIds, storage[i], ready, commitChans[i])
 		ns[i].Serve()
 	}
 
@@ -58,6 +61,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 
 	h := &Harness{
 		cluster:     ns,
+		storage:     storage,
 		commitChans: commitChans,
 		commits:     commits,
 		connected:   connected,
@@ -228,7 +232,7 @@ func (h *Harness) CheckNotCommitted(cmd int) {
 	}
 }
 
-func (h *Harness) SubmitToServer(serverId int, command any) bool {
+func (h *Harness) SubmitToServer(serverId int, command any) int {
 	return h.cluster[serverId].cm.Submit(command)
 }
 

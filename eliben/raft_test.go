@@ -167,7 +167,7 @@ func TestCommitOneCommand(t *testing.T) {
 	origLeaderId, _ := h.CheckSingleLeader()
 
 	tlog("submitting 42 to %d", origLeaderId)
-	isLeader := h.SubmitToServer(origLeaderId, 42)
+	isLeader := h.SubmitToServer(origLeaderId, 42) >= 0
 	if !isLeader {
 		t.Errorf("want id=%d leader, but it's not", origLeaderId)
 	}
@@ -183,7 +183,7 @@ func TestSubmitNonLeaderFails(t *testing.T) {
 	origLeaderId, _ := h.CheckSingleLeader()
 	sid := (origLeaderId + 1) % 3
 	tlog("submitting 42 to %d", sid)
-	isLeader := h.SubmitToServer(sid, 42)
+	isLeader := h.SubmitToServer(sid, 42) >= 0
 	if isLeader {
 		t.Errorf("want id=%d !leader, but it is", sid)
 	}
@@ -201,7 +201,7 @@ func TestCommitMultipleCommands(t *testing.T) {
 	values := []int{42, 55, 81}
 	for _, v := range values {
 		tlog("submitting %d to %d", v, origLeaderId)
-		isLeader := h.SubmitToServer(origLeaderId, v)
+		isLeader := h.SubmitToServer(origLeaderId, v) >= 0
 		if !isLeader {
 			t.Errorf("want id=%d leader, but it's not", origLeaderId)
 		}
