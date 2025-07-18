@@ -49,7 +49,7 @@ func (s *Server) Serve() {
 	s.cm = NewConsensusModule(s.serverId, s.peerIds, s, s.storage, s.ready, s.commitChan)
 
 	s.rpcServer = rpc.NewServer()
-	s.rpcProxy = &RPCProxy{cm: s.cm}
+	s.rpcProxy = NewRPCProxy(s.cm)
 	s.rpcServer.RegisterName("ConsensusModule", s.rpcProxy)
 
 	var err error
@@ -140,11 +140,25 @@ func (s *Server) Call(id int, serviceMethod string, args any, reply any) error {
 	if peer == nil {
 		return fmt.Errorf("call client %d after it's closed", id)
 	}
-	return peer.Call(serviceMethod, args, reply)
+	return s.rpcProxy.Call(peer, serviceMethod, args, reply)
+}
+
+func (s *Server) Proxy() *RPCProxy {
+	return s.rpcProxy
 }
 
 type RPCProxy struct {
+	mu sync.Mutex
 	cm *ConsensusModule
+
+	numCallsBeforeDrop int
+}
+
+func NewRPCProxy(cm *ConsensusModule) *RPCProxy {
+	return &RPCProxy{
+		cm:                 cm,
+		numCallsBeforeDrop: -1,
+	}
 }
 
 func (rpp *RPCProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
@@ -179,4 +193,33 @@ func (rpp *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesR
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
 	}
 	return rpp.cm.AppendEntries(args, reply)
+}
+
+func (rpp *RPCProxy) Call(peer *rpc.Client, method string, args any, reply any) error {
+	rpp.mu.Lock()
+	if rpp.numCallsBeforeDrop == 0 {
+		rpp.mu.Unlock()
+		rpp.cm.dlog("drop Call %s: %v", method, args)
+		return fmt.Errorf("RPC failed")
+	} else {
+		if rpp.numCallsBeforeDrop > 0 {
+			rpp.numCallsBeforeDrop--
+		}
+		rpp.mu.Unlock()
+		return peer.Call(method, args, reply)
+	}
+}
+
+func (rpp *RPCProxy) DropCallsAfterN(n int) {
+	rpp.mu.Lock()
+	defer rpp.mu.Unlock()
+
+	rpp.numCallsBeforeDrop = n
+}
+
+func (rpp *RPCProxy) DontDropCalls() {
+	rpp.mu.Lock()
+	defer rpp.mu.Unlock()
+
+	rpp.numCallsBeforeDrop = -1
 }

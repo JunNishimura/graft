@@ -23,6 +23,8 @@ type Harness struct {
 
 	connected []bool
 
+	alive []bool
+
 	n int
 	t *testing.T
 }
@@ -30,6 +32,7 @@ type Harness struct {
 func NewHarness(t *testing.T, n int) *Harness {
 	ns := make([]*Server, n)
 	connected := make([]bool, n)
+	alive := make([]bool, n)
 	commitChans := make([]chan CommitEntry, n)
 	commits := make([][]CommitEntry, n)
 	ready := make(chan any)
@@ -47,6 +50,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 		commitChans[i] = make(chan CommitEntry)
 		ns[i] = NewServer(i, peerIds, storage[i], ready, commitChans[i])
 		ns[i].Serve()
+		alive[i] = true
 	}
 
 	for i := 0; i < n; i++ {
@@ -65,6 +69,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 		commitChans: commitChans,
 		commits:     commits,
 		connected:   connected,
+		alive:       alive,
 		n:           n,
 		t:           t,
 	}
@@ -80,11 +85,57 @@ func (h *Harness) Shutdown() {
 		h.connected[i] = false
 	}
 	for i := 0; i < h.n; i++ {
-		h.cluster[i].Shutdown()
+		if h.alive[i] {
+			h.alive[i] = false
+			h.cluster[i].Shutdown()
+		}
 	}
 	for i := 0; i < h.n; i++ {
 		close(h.commitChans[i])
 	}
+}
+
+func (h *Harness) PeerDropCallsAfterN(id int, n int) {
+	tlog("peer %d drop calls after %d", id, n)
+	h.cluster[id].Proxy().DropCallsAfterN(n)
+}
+
+func (h *Harness) PeerDontDropCalls(id int) {
+	tlog("peer %d don't drop calls", id)
+	h.cluster[id].Proxy().DontDropCalls()
+}
+
+func (h *Harness) CrashPeer(id int) {
+	tlog("Crash %d", id)
+	h.DisconnectPeer(id)
+	h.alive[id] = false
+	h.cluster[id].Shutdown()
+
+	h.mu.Lock()
+	h.commits[id] = h.commits[id][:0]
+	h.mu.Unlock()
+}
+
+func (h *Harness) RestartPeer(id int) {
+	if h.alive[id] {
+		log.Fatalf("id=%d is alive in RestartPeer", id)
+	}
+	tlog("Restart %d", id)
+
+	peerIds := make([]int, 0)
+	for p := 0; p < h.n; p++ {
+		if p != id {
+			peerIds = append(peerIds, p)
+		}
+	}
+
+	ready := make(chan any)
+	h.cluster[id] = NewServer(id, peerIds, h.storage[id], ready, h.commitChans[id])
+	h.cluster[id].Serve()
+	h.ReconnectPeer(id)
+	close(ready)
+	h.alive[id] = true
+	sleepMs(20)
 }
 
 func (h *Harness) CheckSingleLeader() (int, int) {
@@ -141,7 +192,7 @@ func (h *Harness) DisconnectPeer(peerId int) {
 func (h *Harness) ReconnectPeer(peerId int) {
 	tlog("Reconnect %d", peerId)
 	for j := 0; j < h.n; j++ {
-		if j != peerId {
+		if j != peerId && h.alive[j] {
 			if err := h.cluster[peerId].ConnectToPeer(j, h.cluster[j].GetListenAddr()); err != nil {
 				h.t.Fatal(err)
 			}
