@@ -103,6 +103,10 @@ func (s *Server) ConnectToPeer(peerId int, addr net.Addr) error {
 	return nil
 }
 
+func (s *Server) Submit(cmd any) int {
+	return s.cm.Submit(cmd)
+}
+
 func (s *Server) DisconnectAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
