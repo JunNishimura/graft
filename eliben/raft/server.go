@@ -151,6 +151,11 @@ func (s *Server) Proxy() *RPCProxy {
 	return s.rpcProxy
 }
 
+func (s *Server) IsLeader() bool {
+	_, _, isLeader := s.cm.Report()
+	return isLeader
+}
+
 type RPCProxy struct {
 	mu sync.Mutex
 	cm *ConsensusModule

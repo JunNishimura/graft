@@ -1,11 +1,14 @@
 package kvservice
 
 import (
+	"context"
 	"encoding/gob"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/JunNishimura/graft/eliben/api"
 	"github.com/JunNishimura/graft/eliben/raft"
@@ -46,6 +49,28 @@ func New(id int, peerIds []int, storage raft.Storage, readyChan <-chan any) *KVS
 
 	kvs.runUpdater()
 	return kvs
+}
+
+func (kvs *KVService) Shutdown() error {
+	kvs.kvlog("shutting down Raft server")
+	kvs.rs.Shutdown()
+	kvs.kvlog("closing commit channel")
+	close(kvs.commitChan)
+
+	if kvs.srv != nil {
+		kvs.kvlog("shutting down HTTP server")
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		kvs.srv.Shutdown(ctx)
+		kvs.kvlog("HTTP shutdown complete")
+		return nil
+	}
+
+	return nil
+}
+
+func (kvs *KVService) IsLeader() bool {
+	return kvs.rs.IsLeader()
 }
 
 func (kvs *KVService) ServeHTTP(port int) {
@@ -245,4 +270,20 @@ func (kvs *KVService) kvlog(format string, args ...any) {
 		format = fmt.Sprintf("[kv %d] ", kvs.id) + format
 		log.Printf(format, args...)
 	}
+}
+
+func (kvs *KVService) ConnectToRaftPeer(peerId int, addr net.Addr) error {
+	return kvs.rs.ConnectToPeer(peerId, addr)
+}
+
+func (kvs *KVService) DisconnectFromAllRaftPeers() {
+	kvs.rs.DisconnectAll()
+}
+
+func (kvs *KVService) DisconnectFromRaftPeer(peerId int) error {
+	return kvs.rs.DisconnectPeer(peerId)
+}
+
+func (kvs *KVService) GetRaftListenAddr() net.Addr {
+	return kvs.rs.GetListenAddr()
 }
