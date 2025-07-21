@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/JunNishimura/graft/eliben"
 	"github.com/JunNishimura/graft/eliben/api"
+	"github.com/JunNishimura/graft/eliben/raft"
 )
 
 type KVService struct {
@@ -16,9 +16,9 @@ type KVService struct {
 
 	id int
 
-	rs *eliben.Server
+	rs *raft.Server
 
-	commitChan chan eliben.CommitEntry
+	commitChan chan raft.CommitEntry
 
 	commitSubs map[int]chan Command
 
@@ -29,11 +29,11 @@ type KVService struct {
 	httpResponsesEnabled bool
 }
 
-func New(id int, peerIds []int, storage eliben.Storage, readyChan <-chan any) *KVService {
+func New(id int, peerIds []int, storage raft.Storage, readyChan <-chan any) *KVService {
 	gob.Register(Command{})
-	commitChan := make(chan eliben.CommitEntry)
+	commitChan := make(chan raft.CommitEntry)
 
-	rs := eliben.NewServer(id, peerIds, storage, readyChan, commitChan)
+	rs := raft.NewServer(id, peerIds, storage, readyChan, commitChan)
 	rs.Serve()
 	kvs := &KVService{
 		id:                   id,

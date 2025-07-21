@@ -1,4 +1,4 @@
-package eliben
+package raft
 
 import (
 	"bytes"
