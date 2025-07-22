@@ -49,6 +49,23 @@ func (cr *CASResponse) Status() ResponseStatus {
 	return cr.RespStatus
 }
 
+type AppendRequest struct {
+	Key       string
+	Value     string
+	ClientID  int64
+	RequestID int64
+}
+
+type AppendResponse struct {
+	RespStatus ResponseStatus
+	KeyFound   bool
+	PrevValue  string
+}
+
+func (ar *AppendResponse) Status() ResponseStatus {
+	return ar.RespStatus
+}
+
 type ResponseStatus int
 
 const (
@@ -56,13 +73,15 @@ const (
 	StatusOK
 	StatusNotLeader
 	StatusFailedCommit
+	StatusDuplicateRequest
 )
 
 var responseName = map[ResponseStatus]string{
-	StatusInvalid:      "invalid",
-	StatusOK:           "OK",
-	StatusNotLeader:    "NotLeader",
-	StatusFailedCommit: "FailedCommit",
+	StatusInvalid:          "invalid",
+	StatusOK:               "OK",
+	StatusNotLeader:        "NotLeader",
+	StatusFailedCommit:     "FailedCommit",
+	StatusDuplicateRequest: "DuplicateRequest",
 }
 
 func (rs ResponseStatus) String() string {
