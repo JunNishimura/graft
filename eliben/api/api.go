@@ -3,6 +3,9 @@ package api
 type PutRequest struct {
 	Key   string
 	Value string
+
+	ClientID  int64
+	RequestID int64
 }
 
 type Response interface {
@@ -21,6 +24,9 @@ func (r *PutResponse) Status() ResponseStatus {
 
 type GetRequest struct {
 	Key string
+
+	ClientID  int64
+	RequestID int64
 }
 
 type GetResponse struct {
@@ -37,6 +43,9 @@ type CASRequest struct {
 	Key          string
 	CompareValue string
 	Value        string
+
+	ClientID  int64
+	RequestID int64
 }
 
 type CASResponse struct {

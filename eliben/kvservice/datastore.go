@@ -30,6 +30,15 @@ func (ds *DataStore) Put(key, value string) (string, bool) {
 	return v, ok
 }
 
+func (ds *DataStore) Append(key, value string) (string, bool) {
+	ds.Lock()
+	defer ds.Unlock()
+
+	v, ok := ds.data[key]
+	ds.data[key] += value
+	return v, ok
+}
+
 func (ds *DataStore) CAS(key, compare, value string) (string, bool) {
 	ds.Lock()
 	defer ds.Unlock()
