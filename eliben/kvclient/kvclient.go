@@ -36,8 +36,10 @@ var clientCount atomic.Int64
 
 func (c *KVClient) Put(ctx context.Context, key, value string) (string, bool, error) {
 	putReq := api.PutRequest{
-		Key:   key,
-		Value: value,
+		Key:       key,
+		Value:     value,
+		ClientID:  c.clientID,
+		RequestID: c.requestID.Add(1),
 	}
 	var putResp api.PutResponse
 	err := c.send(ctx, "put", putReq, &putResp)
@@ -46,7 +48,9 @@ func (c *KVClient) Put(ctx context.Context, key, value string) (string, bool, er
 
 func (c *KVClient) Get(ctx context.Context, key string) (string, bool, error) {
 	getReq := api.GetRequest{
-		Key: key,
+		Key:       key,
+		ClientID:  c.clientID,
+		RequestID: c.requestID.Add(1),
 	}
 	var getResp api.GetResponse
 	err := c.send(ctx, "get", getReq, &getResp)
@@ -58,6 +62,8 @@ func (c *KVClient) CAS(ctx context.Context, key, compare, value string) (string,
 		Key:          key,
 		CompareValue: compare,
 		Value:        value,
+		ClientID:     c.clientID,
+		RequestID:    c.requestID.Add(1),
 	}
 	var casResp api.CASResponse
 	err := c.send(ctx, "cas", casReq, &casResp)
