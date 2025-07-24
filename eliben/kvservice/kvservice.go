@@ -41,12 +41,13 @@ func New(id int, peerIds []int, storage raft.Storage, readyChan <-chan any) *KVS
 	rs := raft.NewServer(id, peerIds, storage, readyChan, commitChan)
 	rs.Serve()
 	kvs := &KVService{
-		id:                   id,
-		rs:                   rs,
-		commitChan:           commitChan,
-		ds:                   NewDataStore(),
-		commitSubs:           make(map[int]chan Command),
-		httpResponsesEnabled: true,
+		id:                     id,
+		rs:                     rs,
+		commitChan:             commitChan,
+		ds:                     NewDataStore(),
+		commitSubs:             make(map[int]chan Command),
+		lastRequestIDPerClient: make(map[int64]int64),
+		httpResponsesEnabled:   true,
 	}
 
 	kvs.runUpdater()
