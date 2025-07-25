@@ -117,6 +117,9 @@ FindLeader:
 		case api.StatusFailedCommit:
 			retryCtxCancel()
 			return fmt.Errorf("commit failed; please retry")
+		case api.StatusDuplicateRequest:
+			retryCtxCancel()
+			return fmt.Errorf("this request was already completed")
 		default:
 			panic("unreachable")
 		}

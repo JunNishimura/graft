@@ -179,7 +179,7 @@ func (h *Harness) RestartService(id int) {
 
 	peerIds := make([]int, 0)
 	for p := 0; p < h.n; p++ {
-		if p != id && h.alive[p] {
+		if p != id {
 			peerIds = append(peerIds, p)
 		}
 	}
@@ -191,6 +191,11 @@ func (h *Harness) RestartService(id int) {
 	close(ready)
 	h.alive[id] = true
 	time.Sleep(20 * time.Millisecond) // Give some time for the service to stabilize
+}
+
+func (h *Harness) DelayNextHTTPResponseFromService(id int) {
+	tlog("Delaying next HTTP response from %d", id)
+	h.kvCluster[id].DelayNextHTTPResponse()
 }
 
 func (h *Harness) CheckSingleLeader() int {
@@ -219,6 +224,16 @@ func (h *Harness) CheckPut(c *kvclient.KVClient, key, value string) (string, boo
 	ctx, cancel := context.WithTimeout(h.ctx, 500*time.Millisecond)
 	defer cancel()
 	pv, f, err := c.Put(ctx, key, value)
+	if err != nil {
+		h.t.Error(err)
+	}
+	return pv, f
+}
+
+func (h *Harness) CheckAppend(c *kvclient.KVClient, key, value string) (string, bool) {
+	ctx, cancel := context.WithTimeout(h.ctx, 500*time.Millisecond)
+	defer cancel()
+	pv, f, err := c.Append(ctx, key, value)
 	if err != nil {
 		h.t.Error(err)
 	}

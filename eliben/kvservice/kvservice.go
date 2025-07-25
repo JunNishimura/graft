@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/JunNishimura/graft/eliben/api"
@@ -31,7 +32,7 @@ type KVService struct {
 
 	lastRequestIDPerClient map[int64]int64
 
-	httpResponsesEnabled bool
+	delayNextHTTPResponse atomic.Bool
 }
 
 func New(id int, peerIds []int, storage raft.Storage, readyChan <-chan any) *KVService {
@@ -47,7 +48,6 @@ func New(id int, peerIds []int, storage raft.Storage, readyChan <-chan any) *KVS
 		ds:                     NewDataStore(),
 		commitSubs:             make(map[int]chan Command),
 		lastRequestIDPerClient: make(map[int64]int64),
-		httpResponsesEnabled:   true,
 	}
 
 	kvs.runUpdater()
@@ -102,9 +102,12 @@ func (kvs *KVService) ServeHTTP(port int) {
 }
 
 func (kvs *KVService) sendHTTPResponse(w http.ResponseWriter, v any) {
-	if kvs.httpResponsesEnabled {
-		renderJSON(w, v)
+	if kvs.delayNextHTTPResponse.Load() {
+		kvs.delayNextHTTPResponse.Store(false)
+		time.Sleep(300 * time.Millisecond)
 	}
+	kvs.kvlog("sending response %#v", v)
+	renderJSON(w, v)
 }
 
 func (kvs *KVService) handleGet(w http.ResponseWriter, req *http.Request) {
@@ -134,7 +137,7 @@ func (kvs *KVService) handleGet(w http.ResponseWriter, req *http.Request) {
 	case commitCmd := <-sub:
 		if commitCmd.ServiceID == kvs.id {
 			if commitCmd.IsDuplicate {
-				kvs.sendHTTPResponse(w, api.AppendResponse{
+				kvs.sendHTTPResponse(w, api.GetResponse{
 					RespStatus: api.StatusDuplicateRequest,
 				})
 			} else {
@@ -145,7 +148,7 @@ func (kvs *KVService) handleGet(w http.ResponseWriter, req *http.Request) {
 				})
 			}
 		} else {
-			kvs.sendHTTPResponse(w, api.GetResponse{RespStatus: api.StatusNotLeader})
+			kvs.sendHTTPResponse(w, api.GetResponse{RespStatus: api.StatusFailedCommit})
 		}
 	case <-req.Context().Done():
 		return
@@ -180,7 +183,7 @@ func (kvs *KVService) handlePut(w http.ResponseWriter, req *http.Request) {
 	case commitCmd := <-sub:
 		if commitCmd.ServiceID == kvs.id {
 			if commitCmd.IsDuplicate {
-				kvs.sendHTTPResponse(w, api.AppendResponse{
+				kvs.sendHTTPResponse(w, api.PutResponse{
 					RespStatus: api.StatusDuplicateRequest,
 				})
 			} else {
@@ -191,7 +194,7 @@ func (kvs *KVService) handlePut(w http.ResponseWriter, req *http.Request) {
 				})
 			}
 		} else {
-			kvs.sendHTTPResponse(w, api.PutResponse{RespStatus: api.StatusNotLeader})
+			kvs.sendHTTPResponse(w, api.PutResponse{RespStatus: api.StatusFailedCommit})
 		}
 	case <-req.Context().Done():
 		return
@@ -237,7 +240,7 @@ func (kvs *KVService) handleAppend(w http.ResponseWriter, req *http.Request) {
 				})
 			}
 		} else {
-			kvs.sendHTTPResponse(w, api.AppendResponse{RespStatus: api.StatusNotLeader})
+			kvs.sendHTTPResponse(w, api.AppendResponse{RespStatus: api.StatusFailedCommit})
 		}
 	case <-req.Context().Done():
 		return
@@ -273,7 +276,7 @@ func (kvs *KVService) handleCAS(w http.ResponseWriter, req *http.Request) {
 	case commitCmd := <-sub:
 		if commitCmd.ServiceID == kvs.id {
 			if commitCmd.IsDuplicate {
-				kvs.sendHTTPResponse(w, api.AppendResponse{
+				kvs.sendHTTPResponse(w, api.CASResponse{
 					RespStatus: api.StatusDuplicateRequest,
 				})
 			} else {
@@ -284,7 +287,7 @@ func (kvs *KVService) handleCAS(w http.ResponseWriter, req *http.Request) {
 				})
 			}
 		} else {
-			kvs.sendHTTPResponse(w, api.CASResponse{RespStatus: api.StatusNotLeader})
+			kvs.sendHTTPResponse(w, api.CASResponse{RespStatus: api.StatusFailedCommit})
 		}
 	case <-req.Context().Done():
 		return
@@ -373,4 +376,8 @@ func (kvs *KVService) DisconnectFromRaftPeer(peerId int) error {
 
 func (kvs *KVService) GetRaftListenAddr() net.Addr {
 	return kvs.rs.GetListenAddr()
+}
+
+func (kvs *KVService) DelayNextHTTPResponse() {
+	kvs.delayNextHTTPResponse.Store(true)
 }
